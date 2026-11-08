@@ -1,36 +1,40 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# NESale - Autonomous AI Sales & Booking SaaS Platform
+
+An autonomous AI sales assistant and customer conversion SaaS platform built for e-commerce storefronts and service-based businesses.
+
+## Features
+- **Autonomous AI Sales & Booking Agent**: Embeddable shopper widget (`widget.js`) with intelligent product discovery, appointment booking, and instant checkout recommendations.
+- **Service & Appointment Scheduling**: Real-time availability slot generation, conflict checking, and calendar booking for service-based professionals.
+- **Multi-Tenant Architecture**: Robust tenant isolation, team management, and role-based access control (RBAC).
+- **RAG & Knowledge Base**: Automated crawling, text chunking, and vector embedding for accurate store knowledge Q&A.
+- **Ultra-Fast Performance**: In-memory SWR caching layer and tenant memoization reducing query latency to sub-50ms.
 
 ## Getting Started
 
-First, run the development server:
+First, install dependencies:
+
+```bash
+npm install
+```
+
+Configure your environment variables in `.env`:
+```bash
+cp .env.example .env
+```
+
+Generate Prisma client:
+```bash
+npx prisma generate
+```
+
+Run the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Documentation
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+For full architectural blueprints, database schema details, and API documentation, refer to [PROJECT_DOCUMENTATION.md](./PROJECT_DOCUMENTATION.md).
