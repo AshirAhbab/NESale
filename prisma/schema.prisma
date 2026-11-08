@@ -1,0 +1,624 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// 1. Businesses
+model Business {
+  id            String    @id @default(uuid())
+  name          String
+  slug          String    @unique
+  businessType  String    @map("business_type")
+  businessSubtype String? @map("business_subtype") // restaurant, clinic, trade, professional, salon, other
+  websiteUrl    String?   @map("website_url")
+  description   String?
+  phone         String?
+  email         String?
+  whatsapp      String?
+  timezone      String?   @default("UTC")
+  currency      String?   @default("USD")
+  logoUrl       String?   @map("logo_url")
+  status        String    @default("active")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  members          BusinessMember[]
+  teams            Team[]
+  teamMembers      TeamMember[]
+  teamAssignments  TeamWebsiteAssignment[]
+  invitations      Invitation[]
+  integrations     Integration[]
+  products         Product[]
+  productVariants  ProductVariant[]
+  services         Service[]
+  staff            Staff[]
+  locations        Location[]
+  knowledgeSources KnowledgeSource[]
+  knowledgeChunks  KnowledgeChunk[]
+  conversations    Conversation[]
+  messages         Message[]
+  leads            Lead[]
+  analyticsEvents  AnalyticsEvent[]
+  usageRecords     UsageRecord[]
+  subscriptions    Subscription[]
+  widgetConfig     WidgetConfig?
+  businessSettings BusinessSettings?
+  jobs             Job[]
+  staffSchedules   StaffSchedule[]
+  appointments     Appointment[]
+
+  @@map("businesses")
+}
+
+// 2. Users
+model User {
+  id        String    @id @default(uuid())
+  email     String    @unique
+  name      String?
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  memberships BusinessMember[]
+  teamMembers TeamMember[]
+  invitedInvitations Invitation[] @relation("InvitedInvitations")
+  acceptedInvitations Invitation[] @relation("AcceptedInvitations")
+
+  @@map("users")
+}
+
+// 3. Business Members (Tenant Membership & Roles)
+model BusinessMember {
+  id         String   @id @default(uuid())
+  businessId String   @map("business_id")
+  userId     String   @map("user_id")
+  role       String   @default("owner") // owner, admin, member
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, userId])
+  @@map("business_members")
+}
+
+// 4. Integrations (Shopify, Custom Webhooks, etc.)
+model Integration {
+  id                     String    @id @default(uuid())
+  businessId             String    @map("business_id")
+  teamId                 String?   @map("team_id")
+  provider               String // shopify, website, etc.
+  status                 String    @default("active")
+  externalAccountId      String?   @map("external_account_id")
+  accessTokenEncrypted   String?   @map("access_token_encrypted")
+  refreshTokenEncrypted  String?   @map("refresh_token_encrypted")
+  metadata               Json?     @default("{}")
+  lastSyncAt             DateTime? @map("last_sync_at")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  teamAssignments TeamWebsiteAssignment[]
+
+  @@map("integrations")
+  @@index([teamId])
+}
+
+// 5. Products
+model Product {
+  id           String   @id @default(uuid())
+  businessId   String   @map("business_id")
+  teamId       String?  @map("team_id")
+  externalId   String?  @map("external_id")
+  name         String
+  slug         String?
+  description  String?
+  productType  String?   @map("product_type")
+  status       String    @default("active")
+  url          String?
+  priceMin     Decimal?  @map("price_min") @db.Decimal(10, 2)
+  priceMax     Decimal?  @map("price_max") @db.Decimal(10, 2)
+  currency     String?   @default("USD")
+  imageUrl     String?   @map("image_url")
+  metadata     Json?     @default("{}")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  business Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  variants ProductVariant[]
+
+  @@unique([businessId, externalId])
+  @@index([teamId])
+  @@map("products")
+}
+
+// 6. Product Variants
+model ProductVariant {
+  id                String   @id @default(uuid())
+  businessId        String   @map("business_id")
+  teamId            String?  @map("team_id")
+  productId         String   @map("product_id")
+  externalId        String?  @map("external_id")
+  name              String?
+  sku               String?
+  price             Decimal  @db.Decimal(10, 2)
+  currency          String   @default("USD")
+  inventoryQuantity Int      @default(0) @map("inventory_quantity")
+  available         Boolean  @default(true)
+  options           Json?    @default("{}")
+  metadata          Json?    @default("{}")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, externalId])
+  @@index([teamId])
+  @@map("product_variants")
+}
+
+// 7. Services (For salons, clinics, agencies, contractors)
+model Service {
+  id              String   @id @default(uuid())
+  businessId      String   @map("business_id")
+  teamId          String?  @map("team_id")
+  externalId      String?  @map("external_id")
+  name            String
+  description     String?
+  category        String?
+  priceMin        Decimal? @map("price_min") @db.Decimal(10, 2)
+  priceMax        Decimal? @map("price_max") @db.Decimal(10, 2)
+  currency        String?  @default("USD")
+  durationMinutes Int?     @map("duration_minutes")
+  bookingUrl      String?  @map("booking_url")
+  status          String   @default("active")
+  metadata        Json?    @default("{}")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+
+  @@map("services")
+  @@index([teamId])
+}
+
+// 8. Staff
+model Staff {
+  id         String   @id @default(uuid())
+  businessId String   @map("business_id")
+  teamId     String?  @map("team_id")
+  name       String
+  role       String?
+  bio        String?
+  bookingUrl String?  @map("booking_url")
+  metadata   Json?    @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  schedules StaffSchedule[]
+  appointments Appointment[]
+
+  @@map("staff")
+  @@index([teamId])
+}
+
+// 9. Locations
+model Location {
+  id         String   @id @default(uuid())
+  businessId String   @map("business_id")
+  teamId     String?  @map("team_id")
+  name       String?
+  address    String?
+  city       String?
+  region     String?
+  postalCode String?  @map("postal_code")
+  country    String?
+  phone      String?
+  latitude   Decimal? @db.Decimal(10, 7)
+  longitude  Decimal? @db.Decimal(10, 7)
+  hours      Json?    @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("locations")
+  @@index([teamId])
+}
+
+// 10. Knowledge Sources
+model KnowledgeSource {
+  id            String    @id @default(uuid())
+  businessId    String    @map("business_id")
+  teamId        String?   @map("team_id")
+  type          String // webpage, faq, document, manual, policy, product, service
+  sourceUrl     String?   @map("source_url")
+  title         String?
+  status        String    @default("ready")
+  contentHash   String?   @map("content_hash")
+  metadata      Json?     @default("{}")
+  lastIndexedAt DateTime? @map("last_indexed_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  business Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  chunks   KnowledgeChunk[]
+
+  @@map("knowledge_sources")
+  @@index([teamId])
+}
+
+// 11. Knowledge Chunks (Unstructured text chunks with pgvector embeddings)
+model KnowledgeChunk {
+  id          String   @id @default(uuid())
+  businessId  String   @map("business_id")
+  teamId      String?  @map("team_id")
+  sourceId    String   @map("source_id")
+  content     String
+  embedding   String?  @map("embedding")
+  embeddingModel String? @map("embedding_model")
+  metadata    Json?    @default("{}")
+  contentHash String?  @map("content_hash")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  business Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  source   KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@map("knowledge_chunks")
+  @@index([businessId])
+  @@index([sourceId])
+  @@index([teamId])
+}
+
+// 12. Conversations
+model Conversation {
+  id         String   @id @default(uuid())
+  businessId String   @map("business_id")
+  teamId     String?  @map("team_id")
+  sessionId  String?  @map("session_id")
+  visitorId  String?   @map("visitor_id")
+  channel    String?   @default("widget") // widget, shopify, etc.
+  status     String    @default("active") // active, closed, handed_off
+  startedAt  DateTime  @default(now()) @map("started_at")
+  endedAt    DateTime? @map("ended_at")
+  metadata   Json?     @default("{}")
+
+  business        Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  messages        Message[]
+  leads           Lead[]
+  analyticsEvents AnalyticsEvent[]
+
+  @@map("conversations")
+  @@index([teamId])
+}
+
+// 13. Messages
+model Message {
+  id             String   @id @default(uuid())
+  businessId     String   @map("business_id")
+  teamId         String?  @map("team_id")
+  conversationId String   @map("conversation_id")
+  role           String // user, assistant, system, tool
+  content        String
+  toolName       String?  @map("tool_name")
+  toolInput      Json?    @map("tool_input")
+  toolOutput     Json?    @map("tool_output")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  business     Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+  @@index([teamId])
+}
+
+// 14. Leads
+model Lead {
+  id             String   @id @default(uuid())
+  businessId     String   @map("business_id")
+  teamId         String?  @map("team_id")
+  conversationId String?  @map("conversation_id")
+  name           String?
+  email          String?
+  phone          String?
+  notes          String?
+  status         String   @default("new")
+  source         String?  @default("chat_widget")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@map("leads")
+  @@index([teamId])
+}
+
+// 15. Analytics Events
+model AnalyticsEvent {
+  id             String   @id @default(uuid())
+  businessId     String   @map("business_id")
+  teamId         String?  @map("team_id")
+  conversationId String?  @map("conversation_id")
+  eventType      String   @map("event_type") // widget_open, product_view, add_to_cart, purchase, lead_created, etc.
+  entityType     String?  @map("entity_type")
+  entityId       String?  @map("entity_id")
+  valueNumeric   Decimal? @map("value_numeric") @db.Decimal(10, 2)
+  metadata       Json?    @default("{}")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@map("analytics_events")
+  @@index([teamId])
+}
+
+// 16. Usage Records (Token limits, conversation limits per billing cycle)
+model UsageRecord {
+  id          String   @id @default(uuid())
+  businessId  String   @map("business_id")
+  periodStart DateTime @map("period_start") @db.Date
+  periodEnd   DateTime @map("period_end") @db.Date
+  metric      String // conversations, tokens, embeddings
+  quantity    BigInt   @default(0)
+  metadata    Json?    @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("usage_records")
+}
+
+// 17. Subscriptions (Stripe billing tiers)
+model Subscription {
+  id                     String    @id @default(uuid())
+  businessId             String    @map("business_id")
+  provider               String    @default("stripe")
+  externalCustomerId     String?   @map("external_customer_id")
+  externalSubscriptionId String?   @map("external_subscription_id")
+  planCode               String    @default("free") @map("plan_code") // free, starter, growth, pro
+  status                 String    @default("active")
+  currentPeriodStart     DateTime? @map("current_period_start")
+  currentPeriodEnd       DateTime? @map("current_period_end")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+// 18. Widget Configs
+model WidgetConfig {
+  id             String   @id @default(uuid())
+  businessId     String   @unique @map("business_id")
+  enabled        Boolean  @default(true)
+  position       String   @default("bottom-right") // bottom-right, bottom-left
+  primaryColor   String   @default("#4F46E5") @map("primary_color")
+  accentColor    String   @default("#10B981") @map("accent_color")
+  welcomeMessage String   @default("Hi there! How can I help you today?") @map("welcome_message")
+  assistantName  String   @default("Sophia") @map("assistant_name")
+  avatarUrl      String?  @map("avatar_url")
+  showBranding   Boolean  @default(true) @map("show_branding")
+  customCss      Json?    @default("{}") @map("custom_css")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("widget_configs")
+}
+
+// 19. Business Settings
+model BusinessSettings {
+  id                  String   @id @default(uuid())
+  businessId          String   @unique @map("business_id")
+  aiInstructions      String?  @map("ai_instructions")
+  humanHandoffEnabled Boolean  @default(true) @map("human_handoff_enabled")
+  leadCaptureEnabled  Boolean  @default(true) @map("lead_capture_enabled")
+  bookingUrl          String?  @map("booking_url")
+  phone               String?
+  email               String?
+  whatsapp            String?
+  settings            Json?    @default("{}")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("business_settings")
+}
+
+// 20. Teams
+model Team {
+  id          String   @id @default(uuid())
+  businessId  String   @map("business_id")
+  name        String
+  description String?
+  type        String   @default("custom") // ecommerce, services, custom
+  isActive    Boolean  @default(true)
+  metadata    Json?    @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  business         Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  members          TeamMember[]
+  permissions      TeamPermission[]
+  websiteAssignments TeamWebsiteAssignment[]
+  invitations      Invitation[]
+
+  @@map("teams")
+  @@index([businessId])
+}
+
+// 21. Team Members
+model TeamMember {
+  id        String   @id @default(uuid())
+  teamId    String   @map("team_id")
+  userId    String   @map("user_id")
+  businessId String  @map("business_id")
+  role      String   @default("team_member") // team_admin, team_manager, team_member
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  business  Business @relation(fields: [businessId], references: [id])
+
+  @@unique([teamId, userId])
+  @@map("team_members")
+  @@index([businessId])
+  @@index([userId])
+  @@index([teamId])
+}
+
+// 22. Team Permissions
+model TeamPermission {
+  id        String   @id @default(uuid())
+  teamId    String   @map("team_id")
+  feature   String   // products, services, knowledge, conversations, leads, analytics, website, team_management
+  actions   Json?    @default("[]") // ["view", "create", "edit", "delete", "manage_settings", "manage_members", "manage_permissions"]
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, feature])
+  @@map("team_permissions")
+  @@index([teamId])
+}
+
+// 23. Team Website Assignments
+model TeamWebsiteAssignment {
+  id             String   @id @default(uuid())
+  teamId         String   @map("team_id")
+  integrationId  String   @map("integration_id")
+  businessId     String   @map("business_id")
+  isPrimary      Boolean  @default(false)
+  assignedAt     DateTime @default(now()) @map("assigned_at")
+  assignedBy     String?  @map("assigned_by")
+
+  team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  integration Integration @relation(fields: [integrationId], references: [id])
+  business   Business @relation(fields: [businessId], references: [id])
+
+  @@unique([teamId, integrationId])
+  @@map("team_website_assignments")
+  @@index([teamId])
+  @@index([integrationId])
+}
+
+// 24. Invitations
+model Invitation {
+  id          String   @id @default(uuid())
+  businessId  String   @map("business_id")
+  teamId      String?  @map("team_id")
+  email       String   @map("email")
+  tokenHash   String   @map("token_hash")
+  role        String   @default("team_member") // team_admin, team_manager, team_member
+  status      String   @default("pending") // pending, accepted, expired, revoked
+  expiresAt   DateTime @map("expires_at")
+  acceptedAt  DateTime? @map("accepted_at")
+  invitedById String   @map("invited_by_id")
+  acceptedById String? @map("accepted_by_id")
+  metadata    Json?    @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  business   Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  team       Team?         @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  invitedBy  User          @relation(fields: [invitedById], references: [id], onDelete: Cascade, name: "InvitedInvitations")
+  acceptedBy User?         @relation(fields: [acceptedById], references: [id], onDelete: SetNull, name: "AcceptedInvitations")
+
+  @@unique([email, teamId])
+  @@map("invitations")
+  @@index([businessId])
+  @@index([teamId])
+  @@index([tokenHash])
+  @@index([expiresAt])
+  @@index([status])
+}
+
+// 25. Background Jobs (self-built queue, no external dependencies)
+model Job {
+  id          String   @id @default(uuid()) @map("id")
+  businessId  String   @map("business_id")
+  type        String   @map("type") // knowledge_sync, embedding, crawl
+  status      String   @default("pending") // pending, processing, completed, failed
+  payload     Json?    @default("{}") @map("payload")
+  result      Json?    @default("{}") @map("result")
+  error       String?  @map("error")
+  progress    Int      @default(0) @map("progress")
+  maxProgress Int      @default(100) @map("max_progress")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([businessId])
+  @@index([status])
+  @@index([type])
+  @@map("jobs")
+}
+
+// 26. Staff Schedules (Weekly availability per staff member or business-wide)
+model StaffSchedule {
+  id         String   @id @default(uuid())
+  businessId String   @map("business_id")
+  staffId    String?  @map("staff_id")
+  dayOfWeek  Int      @map("day_of_week") // 0=Sunday .. 6=Saturday
+  startTime  String   @map("start_time") // "09:00" in business timezone
+  endTime    String   @map("end_time") // "17:00" in business timezone
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  staff    Staff?   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([businessId])
+  @@index([staffId])
+  @@map("staff_schedules")
+}
+
+// 27. Appointments (Native booking)
+model Appointment {
+  id             String   @id @default(uuid())
+  businessId     String   @map("business_id")
+  teamId         String?  @map("team_id")
+  serviceId      String?  @map("service_id")
+  staffId        String?  @map("staff_id")
+  customerName   String   @map("customer_name")
+  customerEmail  String?  @map("customer_email")
+  customerPhone  String?  @map("customer_phone")
+  startAt        DateTime @map("start_at")
+  endAt          DateTime @map("end_at")
+  status         String   @default("pending") // pending, confirmed, cancelled, completed, no_show
+  source         String   @default("dashboard") // dashboard, widget, chat
+  notes          String?
+  conversationId String?  @map("conversation_id")
+  metadata       Json?    @default("{}")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  service  Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  staff    Staff?   @relation(fields: [staffId], references: [id], onDelete: SetNull)
+
+  @@index([businessId, startAt])
+  @@index([teamId])
+  @@index([serviceId])
+  @@index([staffId])
+  @@index([status])
+  @@map("appointments")
+}
