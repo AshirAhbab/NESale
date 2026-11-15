@@ -42,20 +42,27 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    return NextResponse.json({
-      status: "success",
-      businessId: business.id,
-      businessName: business.name,
-      config: {
-        primaryColor: config.primaryColor,
-        accentColor: config.accentColor,
-        position: config.position,
-        welcomeMessage: config.welcomeMessage,
-        assistantName: config.assistantName,
-        showBranding: config.showBranding,
-        customCss: config.customCss,
+    return NextResponse.json(
+      {
+        status: "success",
+        businessId: business.id,
+        businessName: business.name,
+        config: {
+          primaryColor: config.primaryColor,
+          accentColor: config.accentColor,
+          position: config.position,
+          welcomeMessage: config.welcomeMessage,
+          assistantName: config.assistantName,
+          showBranding: config.showBranding,
+          customCss: config.customCss,
+        },
       },
-    });
+      {
+        headers: {
+          "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
+        },
+      }
+    );
   } catch (error: any) {
     console.error("[Widget Config GET API] Error:", error);
     return NextResponse.json(

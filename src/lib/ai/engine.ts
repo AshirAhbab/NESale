@@ -130,6 +130,126 @@ export class AIEngine {
     };
   }
 
+  /**
+   * Streaming version of processMessage for fast Server-Sent Events (SSE) delivery.
+   * Yields initial metadata (products, citations) in < 200ms, followed by streamed tokens.
+   */
+  public static async *processMessageStream(options: ChatRequestOptions): AsyncGenerator<
+    | { type: "meta"; products: any[]; citations: any[]; intent?: string }
+    | { type: "token"; token: string }
+    | { type: "done"; intent: string; answer: string; actions: any[]; needsHandoff: boolean; model?: string; usage?: any },
+    void,
+    unknown
+  > {
+    const {
+      businessName = "Nordik Gear Co.",
+      businessType = "ecommerce",
+      businessSubtype,
+      assistantName = "Sophia",
+      businessId,
+      bookingUrl,
+      businessHours,
+      message,
+      catalog,
+      knowledge,
+      conversationHistory,
+    } = options;
+
+    // 1. Hybrid Retrieval Step
+    const retrieval = await HybridRetriever.retrieveAsync(message, catalog, knowledge, { businessId });
+
+    // Yield initial meta event so UI can display product cards immediately
+    yield {
+      type: "meta",
+      products: retrieval.catalogCandidates,
+      citations: retrieval.knowledgeChunks.map((k: KnowledgeItem) => k.title || k.sourceUrl || "Knowledge Base"),
+    };
+
+    // 2. Build system prompt
+    const systemPrompt = this.buildSystemPrompt({
+      businessName,
+      businessType,
+      businessSubtype,
+      assistantName,
+      bookingUrl,
+      businessHours,
+      retrieval,
+    });
+
+    // 3. Build messages
+    const messages: OpenRouterMessage[] = [{ role: "system", content: systemPrompt }];
+    if (conversationHistory && conversationHistory.length > 0) {
+      for (const turn of conversationHistory.slice(-6)) {
+        messages.push({ role: turn.role as "user" | "assistant", content: turn.content });
+      }
+    }
+    messages.push({ role: "user", content: `Customer Message: "${message}"` });
+
+    // 4. Try OpenRouter streaming
+    let streamedSuccess = false;
+    let accumulatedText = "";
+    let finalModel = "openrouter/free";
+    let finalUsage: any = null;
+
+    try {
+      const stream = openRouterGateway.streamCompletions(messages, {
+        temperature: 0.7,
+        maxTokens: 1000,
+        topP: 0.9,
+      });
+
+      for await (const chunk of stream) {
+        if (chunk.text) {
+          accumulatedText += chunk.text;
+          yield { type: "token", token: chunk.text };
+        }
+        if (chunk.model) finalModel = chunk.model;
+        if (chunk.usage) finalUsage = chunk.usage;
+        if (chunk.done) {
+          streamedSuccess = true;
+          break;
+        }
+      }
+    } catch (streamErr) {
+      console.warn("[AIEngine] Streaming error, falling back to deterministic response:", streamErr);
+    }
+
+    if (streamedSuccess && accumulatedText.trim()) {
+      const parsed = this.parseOpenRouterResponse(accumulatedText);
+      yield {
+        type: "done",
+        intent: parsed.intent || "general_question",
+        answer: parsed.answer || accumulatedText,
+        actions: parsed.actions || [],
+        needsHandoff: parsed.needsHandoff || false,
+        model: finalModel,
+        usage: finalUsage,
+      };
+      return;
+    }
+
+    // 5. Fallback deterministic execution
+    const fallback = this.deterministicFallback(
+      message,
+      retrieval,
+      businessName,
+      assistantName,
+      businessType,
+      bookingUrl
+    );
+
+    // Yield fallback text
+    yield { type: "token", token: fallback.answer };
+    yield {
+      type: "done",
+      intent: fallback.intent,
+      answer: fallback.answer,
+      actions: fallback.actions || [],
+      needsHandoff: fallback.needsHandoff || false,
+      model: "deterministic-fallback",
+    };
+  }
+
   private static buildSystemPrompt(input: {
     businessName: string;
     businessType: string;

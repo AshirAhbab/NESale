@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { merchantNotifier } from "@/lib/notifications/notifier";
+import { rateLimiter } from "@/lib/security/rateLimiter";
 
 export interface LeadItem {
   id: string;
@@ -124,6 +125,20 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
+    const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    const rateLimit = await rateLimiter.limitLead(clientIp);
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        {
+          error: {
+            code: "RATE_LIMIT_EXCEEDED",
+            message: "Too many lead submissions. Please try again shortly.",
+          },
+        },
+        { status: 429, headers: rateLimiter.formatHeaders(rateLimit) }
+      );
+    }
+
     const body = await req.json();
     const { name, email, phone, notes, source } = body;
 

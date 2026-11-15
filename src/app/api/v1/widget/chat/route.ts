@@ -3,12 +3,17 @@ import { AIEngine } from "@/lib/ai/engine";
 import { getTenantCatalog, getTenantKnowledge } from "@/lib/db/queries";
 import { prisma } from "@/lib/db/prisma";
 import { ensureSeedData } from "@/lib/db/seed";
-import { ApiCache } from "@/lib/cache/apiCache";
 import { recordAiUsage } from "@/lib/ai/usage";
+import { rateLimiter } from "@/lib/security/rateLimiter";
+import { validateWidgetOrigin } from "@/lib/security/originCheck";
 import type { Prisma } from "@/generated/prisma/client";
+
 const MAX_MESSAGE_LENGTH = 4000;
-const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-const RATE_LIMIT_MAX_REQUESTS = 30;
+
+export async function OPTIONS(req: NextRequest) {
+  const cors = validateWidgetOrigin(req);
+  return new NextResponse(null, { status: 204, headers: cors.headers });
+}
 
 export async function POST(req: NextRequest) {
   const requestId = crypto.randomUUID();
@@ -22,6 +27,9 @@ export async function POST(req: NextRequest) {
       body.business_id || body.businessId || body.slug || body.business;
     const sessionId = body.session_id || body.sessionId;
     const visitorId = body.visitor_id || body.visitorId;
+    const wantsStream = body.stream === true;
+
+    const cors = validateWidgetOrigin(req);
 
     if (!message || typeof message !== "string") {
       return NextResponse.json(
@@ -32,7 +40,7 @@ export async function POST(req: NextRequest) {
             requestId,
           },
         },
-        { status: 400 }
+        { status: 400, headers: cors.headers }
       );
     }
 
@@ -45,29 +53,30 @@ export async function POST(req: NextRequest) {
             requestId,
           },
         },
-        { status: 400 }
+        { status: 400, headers: cors.headers }
       );
     }
 
-    // Per-business rate limiting
-    const rateLimitKey = `ratelimit:widget-chat:${businessIdParam || "default"}`;
-    const { allowed, resetAt } = ApiCache.incrementCounter(
-      rateLimitKey,
-      RATE_LIMIT_WINDOW_MS,
-      RATE_LIMIT_MAX_REQUESTS
-    );
+    // Distributed Rate Limiting (Upstash Redis + in-memory fallback)
+    const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    const rateLimit = await rateLimiter.limitChat(`${businessIdParam || "default"}:${clientIp}`);
 
-    if (!allowed) {
+    if (!rateLimit.allowed) {
       return NextResponse.json(
         {
           error: {
             code: "RATE_LIMIT_EXCEEDED",
-            message: "Too many requests. Please try again shortly.",
+            message: "Too many messages. Please wait a moment before sending another.",
             requestId,
-            retryAfterMs: Math.max(0, resetAt - Date.now()),
           },
         },
-        { status: 429 }
+        {
+          status: 429,
+          headers: {
+            ...cors.headers,
+            ...rateLimiter.formatHeaders(rateLimit),
+          },
+        }
       );
     }
 
@@ -118,7 +127,89 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 4. Process with AI Engine (OpenRouter)
+    // 4. Handle Streaming Response (Server-Sent Events)
+    if (wantsStream) {
+      const activeSessionId = sessionId || `sess_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      let accumulatedAnswer = "";
+      let finalDoneData: any = null;
+      let streamedProducts: any[] = [];
+      let streamedActions: any[] = [];
+
+      const stream = new ReadableStream({
+        async start(controller) {
+          const encoder = new TextEncoder();
+          try {
+            for await (const chunk of AIEngine.processMessageStream({
+              message,
+              businessName: business?.name || "Nordik Gear Co.",
+              businessType: business?.businessType,
+              businessSubtype: business?.businessSubtype,
+              bookingUrl: business?.businessSettings?.bookingUrl,
+              assistantName: "Sophia",
+              businessId: currentBizId,
+              catalog,
+              knowledge,
+              conversationHistory,
+            })) {
+              if (chunk.type === "meta") {
+                streamedProducts = chunk.products || [];
+                controller.enqueue(
+                  encoder.encode(`event: meta\ndata: ${JSON.stringify({ ...chunk, session_id: activeSessionId })}\n\n`)
+                );
+              } else if (chunk.type === "token") {
+                accumulatedAnswer += chunk.token;
+                controller.enqueue(
+                  encoder.encode(`event: token\ndata: ${JSON.stringify({ token: chunk.token })}\n\n`)
+                );
+              } else if (chunk.type === "done") {
+                finalDoneData = chunk;
+                streamedActions = chunk.actions || [];
+                controller.enqueue(
+                  encoder.encode(`event: done\ndata: ${JSON.stringify({ ...chunk, session_id: activeSessionId })}\n\n`)
+                );
+              }
+            }
+          } catch (err: any) {
+            controller.enqueue(
+              encoder.encode(`event: error\ndata: ${JSON.stringify({ message: err?.message || "Stream error" })}\n\n`)
+            );
+          } finally {
+            controller.close();
+
+            // Background persistence of conversation turn
+            if (business && accumulatedAnswer) {
+              persistConversationTurn({
+                businessId: business.id,
+                sessionId: activeSessionId,
+                visitorId,
+                userMessage: message,
+                assistantAnswer: accumulatedAnswer,
+                intent: finalDoneData?.intent || "general_question",
+                products: streamedProducts,
+                actions: streamedActions,
+                needsHandoff: finalDoneData?.needsHandoff || false,
+                model: finalDoneData?.model,
+                usage: finalDoneData?.usage,
+                latencyMs: Date.now() - t0,
+                requestId,
+              }).catch((e) => console.warn("[Widget Chat Stream] Persist error:", e));
+            }
+          }
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+          ...cors.headers,
+          ...rateLimiter.formatHeaders(rateLimit),
+        },
+      });
+    }
+
+    // 5. Standard JSON Pipeline (Non-streaming)
     let aiResponse;
     try {
       aiResponse = await AIEngine.processMessage({
@@ -138,142 +229,55 @@ export async function POST(req: NextRequest) {
       throw aiErr;
     }
 
-    // 5. Persist Conversation & Messages to Supabase PostgreSQL
+    // Persist Conversation Turn
     let conversationId: string | null = null;
     if (business) {
-      try {
-        let conversation = await prisma.conversation.findFirst({
-          where: {
-            businessId: business.id,
-            sessionId: sessionId,
-          },
-        });
-
-        if (!conversation) {
-          conversation = await prisma.conversation.create({
-            data: {
-              businessId: business.id,
-              sessionId: sessionId,
-              visitorId: visitorId || `visitor_${Math.random().toString(36).substring(2, 8)}`,
-              channel: "widget",
-              status: aiResponse.needsHandoff ? "handed_off" : "active",
-              metadata: {
-                initialQuery: message,
-                intent: aiResponse.intent,
-                lastActiveAt: new Date().toISOString(),
-                model: aiResponse.metadata?.model ?? null,
-              },
-            },
-          });
-        } else {
-          await prisma.conversation.update({
-            where: { id: conversation.id },
-            data: {
-              status: aiResponse.needsHandoff ? "handed_off" : conversation.status,
-              metadata: {
-                ...((conversation.metadata as Record<string, unknown>) || {}),
-                lastIntent: aiResponse.intent,
-                lastActiveAt: new Date().toISOString(),
-                model: aiResponse.metadata?.model ?? null,
-              },
-            },
-          });
-        }
-
-        conversationId = conversation.id;
-
-        // Persist User Message
-        await prisma.message.create({
-          data: {
-            businessId: business.id,
-            conversationId: conversation.id,
-            role: "user",
-            content: message,
-          },
-        });
-
-        // Persist Assistant Response
-        await prisma.message.create({
-          data: {
-            businessId: business.id,
-            conversationId: conversation.id,
-            role: "assistant",
-            content: aiResponse.answer,
-            toolOutput: {
-              intent: aiResponse.intent,
-              products: aiResponse.products || [],
-              actions: aiResponse.actions || [],
-              citations: aiResponse.citations || [],
-              needsHandoff: aiResponse.needsHandoff,
-              model: aiResponse.metadata?.model ?? null,
-              usage: aiResponse.metadata?.usage ?? null,
-              latencyMs: aiResponse.metadata?.latencyMs ?? null,
-            } as unknown as Prisma.InputJsonValue,
-          },
-        });
-
-        // Log analytics event for conversation turn
-        await prisma.analyticsEvent.create({
-          data: {
-            businessId: business.id,
-            conversationId: conversation.id,
-            eventType: "chat_message",
-            metadata: {
-              intent: aiResponse.intent,
-              hasProducts: (aiResponse.products?.length || 0) > 0,
-              model: aiResponse.metadata?.model ?? null,
-              fallbackUsed: aiResponse.metadata?.fallbackUsed ?? false,
-              latencyMs: aiResponse.metadata?.latencyMs ?? null,
-            },
-          },
-        });
-
-        // Record usage
-        try {
-          await recordAiUsage({
-            businessId: currentBizId,
-            conversationId,
-            model: aiResponse.metadata?.model ?? "deterministic-fallback",
-            inputTokens: aiResponse.metadata?.usage?.prompt_tokens,
-            outputTokens: aiResponse.metadata?.usage?.completion_tokens,
-            totalTokens: aiResponse.metadata?.usage?.total_tokens,
-            durationMs: aiResponse.metadata?.latencyMs ?? Date.now() - t0,
-            success: true,
-            fallbackUsed: aiResponse.metadata?.fallbackUsed ?? false,
-            requestId,
-          });
-          usageRecorded = true;
-        } catch (usageErr) {
-          console.warn(`[Widget Chat] Usage recording failed [${requestId}]:`, usageErr);
-        }
-      } catch (dbErr) {
-        console.warn(`[Widget Chat] Database conversation logging failed [${requestId}]:`, dbErr);
-      }
+      const persisted = await persistConversationTurn({
+        businessId: business.id,
+        sessionId,
+        visitorId,
+        userMessage: message,
+        assistantAnswer: aiResponse.answer,
+        intent: aiResponse.intent,
+        products: aiResponse.products,
+        actions: aiResponse.actions,
+        needsHandoff: aiResponse.needsHandoff,
+        model: aiResponse.metadata?.model,
+        usage: aiResponse.metadata?.usage,
+        latencyMs: aiResponse.metadata?.latencyMs ?? Date.now() - t0,
+        requestId,
+      });
+      conversationId = persisted.conversationId;
+      usageRecorded = persisted.usageRecorded;
     }
 
     const latencyMs = Date.now() - t0;
-    console.log(
-      `[Widget Chat] Request completed [${requestId}] biz=${currentBizId} model=${aiResponse.metadata?.model ?? "fallback"} latency=${latencyMs}ms`
+    return NextResponse.json(
+      {
+        session_id: sessionId || "sess_" + Date.now(),
+        conversation_id: conversationId,
+        message: {
+          text: aiResponse.answer,
+        },
+        intent: aiResponse.intent,
+        products: aiResponse.products,
+        actions: aiResponse.actions,
+        needs_handoff: aiResponse.needsHandoff,
+        metadata: {
+          model: aiResponse.metadata?.model ?? null,
+          usage: aiResponse.metadata?.usage ?? null,
+          latencyMs,
+          fallbackUsed: aiResponse.metadata?.fallbackUsed ?? false,
+          requestId,
+        },
+      },
+      {
+        headers: {
+          ...cors.headers,
+          ...rateLimiter.formatHeaders(rateLimit),
+        },
+      }
     );
-
-    return NextResponse.json({
-      session_id: sessionId || "sess_" + Date.now(),
-      conversation_id: conversationId,
-      message: {
-        text: aiResponse.answer,
-      },
-      intent: aiResponse.intent,
-      products: aiResponse.products,
-      actions: aiResponse.actions,
-      needs_handoff: aiResponse.needsHandoff,
-      metadata: {
-        model: aiResponse.metadata?.model ?? null,
-        usage: aiResponse.metadata?.usage ?? null,
-        latencyMs,
-        fallbackUsed: aiResponse.metadata?.fallbackUsed ?? false,
-        requestId,
-      },
-    });
   } catch (error: unknown) {
     const latencyMs = Date.now() - t0;
     console.error(`[Widget Chat] Request failed [${requestId}] after ${latencyMs}ms:`, error);
@@ -290,41 +294,6 @@ export async function POST(req: NextRequest) {
       code = (error as { code?: string }).code ?? "";
       message = (error as { message?: string }).message ?? "";
       statusCode = 429;
-    } else if ((error as { name?: string }).name === "OpenRouterAuthError") {
-      code = "AI_PROVIDER_AUTH_ERROR";
-      message = "AI service is temporarily unavailable. Please try again later.";
-      statusCode = 503;
-    } else if ((error as { name?: string }).name === "OpenRouterRateLimitError") {
-      code = "AI_PROVIDER_RATE_LIMIT";
-      message = "AI service is busy. Please try again shortly.";
-      statusCode = 503;
-    } else if ((error as { name?: string }).name === "OpenRouterTimeoutError") {
-      code = "AI_PROVIDER_TIMEOUT";
-      message = "AI service timed out. Please try again.";
-      statusCode = 504;
-    } else if ((error as { name?: string }).name === "OpenRouterNoFreeModelError") {
-      code = "AI_PROVIDER_NO_MODEL";
-      message = "No AI model is currently available. Please try again later.";
-      statusCode = 503;
-    }
-
-    // Record failed usage if we have a business context
-    try {
-      const parsedBody = await req.json().catch(() => ({}));
-      const businessId = (parsedBody as { business_id?: string }).business_id;
-      if (businessId && !usageRecorded) {
-        await recordAiUsage({
-          businessId,
-          model: "unknown",
-          durationMs: latencyMs,
-          success: false,
-          fallbackUsed: false,
-          requestId,
-          errorCode: code,
-        });
-      }
-    } catch {
-      // Best effort only
     }
 
     return NextResponse.json(
@@ -338,4 +307,135 @@ export async function POST(req: NextRequest) {
       { status: statusCode }
     );
   }
+}
+
+/**
+ * Helper to record conversation, message, analytics, and usage records.
+ */
+async function persistConversationTurn(params: {
+  businessId: string;
+  sessionId?: string | null;
+  visitorId?: string | null;
+  userMessage: string;
+  assistantAnswer: string;
+  intent?: string;
+  products?: any[];
+  actions?: any[];
+  needsHandoff?: boolean;
+  model?: string | null;
+  usage?: any;
+  latencyMs: number;
+  requestId: string;
+}): Promise<{ conversationId: string | null; usageRecorded: boolean }> {
+  let conversationId: string | null = null;
+  let usageRecorded = false;
+
+  try {
+    let conversation = await prisma.conversation.findFirst({
+      where: {
+        businessId: params.businessId,
+        sessionId: params.sessionId || undefined,
+      },
+    });
+
+    if (!conversation) {
+      conversation = await prisma.conversation.create({
+        data: {
+          businessId: params.businessId,
+          sessionId: params.sessionId || undefined,
+          visitorId: params.visitorId || `visitor_${Math.random().toString(36).substring(2, 8)}`,
+          channel: "widget",
+          status: params.needsHandoff ? "handed_off" : "active",
+          metadata: {
+            initialQuery: params.userMessage,
+            intent: params.intent,
+            lastActiveAt: new Date().toISOString(),
+            model: params.model ?? null,
+          },
+        },
+      });
+    } else {
+      await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: {
+          status: params.needsHandoff ? "handed_off" : conversation.status,
+          metadata: {
+            ...((conversation.metadata as Record<string, unknown>) || {}),
+            lastIntent: params.intent,
+            lastActiveAt: new Date().toISOString(),
+            model: params.model ?? null,
+          },
+        },
+      });
+    }
+
+    conversationId = conversation.id;
+
+    // Persist User Message
+    await prisma.message.create({
+      data: {
+        businessId: params.businessId,
+        conversationId: conversation.id,
+        role: "user",
+        content: params.userMessage,
+      },
+    });
+
+    // Persist Assistant Response
+    await prisma.message.create({
+      data: {
+        businessId: params.businessId,
+        conversationId: conversation.id,
+        role: "assistant",
+        content: params.assistantAnswer,
+        toolOutput: {
+          intent: params.intent,
+          products: params.products || [],
+          actions: params.actions || [],
+          needsHandoff: params.needsHandoff,
+          model: params.model ?? null,
+          usage: params.usage ?? null,
+          latencyMs: params.latencyMs,
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    // Analytics event
+    await prisma.analyticsEvent.create({
+      data: {
+        businessId: params.businessId,
+        conversationId: conversation.id,
+        eventType: "chat_message",
+        metadata: {
+          intent: params.intent,
+          hasProducts: (params.products?.length || 0) > 0,
+          model: params.model ?? null,
+          latencyMs: params.latencyMs,
+        },
+      },
+    });
+
+    // Record token usage
+    try {
+      await recordAiUsage({
+        businessId: params.businessId,
+        conversationId,
+        model: params.model ?? "deterministic-fallback",
+        inputTokens: params.usage?.prompt_tokens,
+        outputTokens: params.usage?.completion_tokens,
+        totalTokens: params.usage?.total_tokens,
+        durationMs: params.latencyMs,
+        success: true,
+        fallbackUsed: params.model === "deterministic-fallback",
+        requestId: params.requestId,
+      });
+      usageRecorded = true;
+    } catch (usageErr) {
+      console.warn(`[Widget Chat] Usage recording failed [${params.requestId}]:`, usageErr);
+    }
+  } catch (dbErr) {
+    console.warn(`[Widget Chat] Conversation turn persistence error [${params.requestId}]:`, dbErr);
+  }
+
+  return { conversationId, usageRecorded };
 }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { merchantNotifier } from "@/lib/notifications/notifier";
+import { rateLimiter } from "@/lib/security/rateLimiter";
 import { isServicesBusiness } from "@/lib/business/types";
 import {
   findBusinessBySlugOrId,
@@ -17,6 +18,20 @@ import {
 
 export async function POST(req: NextRequest) {
   try {
+    const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    const rateLimit = await rateLimiter.limitBooking(clientIp);
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        {
+          error: {
+            code: "RATE_LIMIT_EXCEEDED",
+            message: "Too many appointment requests. Please try again in a few moments.",
+          },
+        },
+        { status: 429, headers: rateLimiter.formatHeaders(rateLimit) }
+      );
+    }
+
     const body = await req.json();
     const identifier =
       body.business_id || body.businessId || body.slug || body.business;

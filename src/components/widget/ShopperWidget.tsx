@@ -208,6 +208,7 @@ export const ShopperWidget: React.FC<ShopperWidgetProps> = ({
           message: text,
           business_id: businessId,
           session_id: activeSession,
+          stream: true,
         }),
       });
 
@@ -215,49 +216,155 @@ export const ShopperWidget: React.FC<ShopperWidgetProps> = ({
         throw new Error("Chat service unavailable");
       }
 
-      const data = await res.json();
-      setIsTyping(false);
+      const isStream = res.headers.get("content-type")?.includes("text/event-stream") && res.body;
 
-      if (data.session_id) {
-        setSessionId(data.session_id);
-        try {
-          const storageKey = businessId
-            ? `nesale_session_${businessId}`
-            : "nesale_shopper_session";
-          sessionStorage.setItem(storageKey, data.session_id);
-        } catch {}
+      if (isStream) {
+        const replyId = (Date.now() + 1).toString();
+        let assistantText = "";
+        let streamProducts: ProductCard[] = [];
+        let streamActions: any[] = [];
+        let messageAdded = false;
+
+        const reader = res.body!.getReader();
+        const decoder = new TextDecoder();
+        let streamBuffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          streamBuffer += decoder.decode(value, { stream: true });
+          const lines = streamBuffer.split("\n");
+          streamBuffer = lines.pop() ?? "";
+
+          let currentEvent = "";
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith("event: ")) {
+              currentEvent = trimmed.slice(7);
+            } else if (trimmed.startsWith("data: ")) {
+              const rawData = trimmed.slice(6);
+              try {
+                const payload = JSON.parse(rawData);
+
+                if (currentEvent === "meta") {
+                  setIsTyping(false);
+                  if (payload.session_id) {
+                    setSessionId(payload.session_id);
+                  }
+                  if (payload.products) {
+                    streamProducts = payload.products.map((p: any) => ({
+                      id: p.id || String(Math.random()),
+                      name: p.name,
+                      price: typeof p.price === "number" ? `${p.price.toFixed(2)}` : p.price || "$49.99",
+                      imageUrl: p.imageUrl || p.image_url,
+                      url: p.url,
+                      inStock: p.available ?? p.inStock ?? true,
+                      rating: p.rating || "4.8 ★",
+                    }));
+                  }
+                  if (!messageAdded) {
+                    messageAdded = true;
+                    setMessages((prev) => [
+                      ...prev,
+                      {
+                        id: replyId,
+                        role: "assistant",
+                        text: "",
+                        products: streamProducts,
+                        timestamp: "Just now",
+                      },
+                    ]);
+                  }
+                } else if (currentEvent === "token") {
+                  setIsTyping(false);
+                  assistantText += payload.token || "";
+                  if (!messageAdded) {
+                    messageAdded = true;
+                    setMessages((prev) => [
+                      ...prev,
+                      {
+                        id: replyId,
+                        role: "assistant",
+                        text: assistantText,
+                        products: streamProducts,
+                        timestamp: "Just now",
+                      },
+                    ]);
+                  } else {
+                    setMessages((prev) =>
+                      prev.map((m) => (m.id === replyId ? { ...m, text: assistantText } : m))
+                    );
+                  }
+                } else if (currentEvent === "done") {
+                  if (payload.needsHandoff) {
+                    setLeadFormOpen(true);
+                  }
+                  if (payload.actions) {
+                    streamActions = payload.actions.map((a: any) => ({
+                      label: a.label,
+                      action: a.type || a.action,
+                      targetId: a.target_id || a.targetId,
+                    }));
+                  }
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === replyId
+                        ? { ...m, text: payload.answer || assistantText, actions: streamActions }
+                        : m
+                    )
+                  );
+                }
+              } catch {}
+            }
+          }
+        }
+        setIsTyping(false);
+      } else {
+        const data = await res.json();
+        setIsTyping(false);
+
+        if (data.session_id) {
+          setSessionId(data.session_id);
+          try {
+            const storageKey = businessId
+              ? `nesale_session_${businessId}`
+              : "nesale_shopper_session";
+            sessionStorage.setItem(storageKey, data.session_id);
+          } catch {}
+        }
+
+        if (data.conversation_id) {
+          setConversationId(data.conversation_id);
+        }
+
+        if (data.needs_handoff) {
+          setLeadFormOpen(true);
+        }
+
+        const reply: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          text: data.message?.text || "I'm here to help!",
+          products: data.products?.map((p: any) => ({
+            id: p.id || String(Math.random()),
+            name: p.name,
+            price: typeof p.price === "number" ? `${p.price.toFixed(2)}` : p.price || "$49.99",
+            imageUrl: p.imageUrl || p.image_url,
+            url: p.url,
+            inStock: p.available ?? p.inStock ?? true,
+            rating: p.rating || "4.8 ★",
+          })),
+          actions: data.actions?.map((a: any) => ({
+            label: a.label,
+            action: a.type || a.action,
+            targetId: a.target_id || a.targetId,
+          })),
+          timestamp: "Just now",
+        };
+
+        setMessages((prev) => [...prev, reply]);
       }
-
-      if (data.conversation_id) {
-        setConversationId(data.conversation_id);
-      }
-
-      if (data.needs_handoff) {
-        setLeadFormOpen(true);
-      }
-
-      const reply: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        text: data.message?.text || "I'm here to help!",
-        products: data.products?.map((p: any) => ({
-          id: p.id || String(Math.random()),
-          name: p.name,
-          price: typeof p.price === "number" ? `$${p.price.toFixed(2)}` : p.price || "$49.99",
-          imageUrl: p.imageUrl || p.image_url,
-          url: p.url,
-          inStock: p.available ?? p.inStock ?? true,
-          rating: p.rating || "4.8 ★",
-        })),
-        actions: data.actions?.map((a: any) => ({
-          label: a.label,
-          action: a.type || a.action,
-          targetId: a.target_id || a.targetId,
-        })),
-        timestamp: "Just now",
-      };
-
-      setMessages((prev) => [...prev, reply]);
     } catch {
       setIsTyping(false);
       setMessages((prev) => [
