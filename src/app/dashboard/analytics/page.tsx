@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import { ClientCache } from "@/lib/cache/clientCache";
 import {
   Download,
   Calendar,
@@ -50,11 +51,24 @@ export default function AnalyticsPage() {
   const [submittingAnswerId, setSubmittingAnswerId] = useState<string | null>(null);
 
   const fetchAnalytics = async () => {
-    setLoading(true);
+    const cacheKey = `client:analytics:${timeRange}`;
+    const cached = ClientCache.get<any>(cacheKey);
+    if (cached) {
+      setApiData(cached);
+      if (cached.chartPoints && cached.chartPoints.length > 0) {
+        setHoveredPoint(cached.chartPoints.length - 1);
+      }
+      setLoading(false);
+      if (ClientCache.isFresh(cacheKey)) return;
+    } else {
+      setLoading(true);
+    }
+
     try {
       const res = await fetch(`/api/v1/dashboard/analytics?timeRange=${timeRange}`);
       if (res.ok) {
         const json = await res.json();
+        ClientCache.set(cacheKey, json);
         setApiData(json);
         if (json.chartPoints && json.chartPoints.length > 0) {
           setHoveredPoint(json.chartPoints.length - 1);

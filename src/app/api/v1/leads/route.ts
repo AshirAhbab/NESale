@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { merchantNotifier } from "@/lib/notifications/notifier";
 
 export interface LeadItem {
   id: string;
@@ -172,6 +173,9 @@ export async function POST(req: NextRequest) {
           createdAt: created.createdAt.toISOString(),
         };
 
+        // Fire-and-forget instant merchant notification (webhook / email / whatsapp)
+        void merchantNotifier.notifyLeadCaptured(newLead, { name: business.name, email: business.email });
+
         return NextResponse.json(
           {
             status: "success",
@@ -199,6 +203,7 @@ export async function POST(req: NextRequest) {
     };
 
     inMemoryLeads.unshift(fallbackLead);
+    void merchantNotifier.notifyLeadCaptured(fallbackLead);
 
     return NextResponse.json(
       {

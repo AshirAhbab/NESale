@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { merchantNotifier } from "@/lib/notifications/notifier";
 import { isServicesBusiness } from "@/lib/business/types";
 import {
   findBusinessBySlugOrId,
@@ -147,6 +148,22 @@ export async function POST(req: NextRequest) {
         metadata: body.metadata || {},
       },
       include: { service: { select: { name: true } }, staff: { select: { name: true } } },
+    });
+
+    // Fire-and-forget instant merchant notification (webhook / email / whatsapp)
+    void merchantNotifier.notifyAppointmentBooked({
+      id: appointment.id,
+      businessId: appointment.businessId,
+      customerName: appointment.customerName,
+      customerEmail: appointment.customerEmail,
+      customerPhone: appointment.customerPhone,
+      serviceName: appointment.service?.name,
+      staffName: appointment.staff?.name,
+      startAt: appointment.startAt,
+      endAt: appointment.endAt,
+      timezone: context.timezone,
+      status: appointment.status,
+      notes: appointment.notes,
     });
 
     return NextResponse.json({

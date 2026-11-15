@@ -29,42 +29,78 @@ export async function GET(req: NextRequest) {
         const startDate = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
         const prevStartDate = new Date(now.getTime() - days * 2 * 24 * 60 * 60 * 1000);
 
-    // Fetch conversations for current vs previous period
-    const [currentConversations, prevConversations] = await Promise.all([
+    // Aggregated SQL queries: fast cold-cache execution without loading thousands of rows over network
+    const [
+      currentConversationsCount,
+      prevConversationsCount,
+      escalatedConvosCount,
+      sampleConversations,
+      currentEvents,
+      prevEvents,
+    ] = await Promise.all([
+      prisma.conversation.count({
+        where: {
+          businessId: currentBizId,
+          startedAt: { gte: startDate },
+        },
+      }),
+      prisma.conversation.count({
+        where: {
+          businessId: currentBizId,
+          startedAt: { gte: prevStartDate, lt: startDate },
+        },
+      }),
+      prisma.conversation.count({
+        where: {
+          businessId: currentBizId,
+          startedAt: { gte: startDate },
+          OR: [
+            { status: "escalated" },
+            { channel: "human" },
+            { status: "handed_off" },
+          ],
+        },
+      }),
+      // Sample 15 recent conversations for average message latency calculation
       prisma.conversation.findMany({
         where: {
           businessId: currentBizId,
           startedAt: { gte: startDate },
         },
+        take: 15,
+        orderBy: { startedAt: "desc" },
         include: {
           messages: {
+            take: 10,
             orderBy: { createdAt: "asc" },
           },
         },
-        orderBy: { startedAt: "desc" },
       }),
-      prisma.conversation.findMany({
-        where: {
-          businessId: currentBizId,
-          startedAt: { gte: prevStartDate, lt: startDate },
-        },
-        select: { id: true },
-      }),
-    ]);
-
-    // Fetch all analytics events for business in the 2x window
-    const [currentEvents, prevEvents] = await Promise.all([
+      // Fetch current events with targeted selection
       prisma.analyticsEvent.findMany({
         where: {
           businessId: currentBizId,
           createdAt: { gte: startDate },
         },
+        select: {
+          id: true,
+          eventType: true,
+          entityId: true,
+          valueNumeric: true,
+          createdAt: true,
+          metadata: true,
+        },
         orderBy: { createdAt: "asc" },
       }),
+      // Previous period events - lean select
       prisma.analyticsEvent.findMany({
         where: {
           businessId: currentBizId,
           createdAt: { gte: prevStartDate, lt: startDate },
+        },
+        select: {
+          eventType: true,
+          valueNumeric: true,
         },
       }),
     ]);
@@ -77,8 +113,8 @@ export async function GET(req: NextRequest) {
       (e) => e.eventType === "widget_open" || e.eventType === "conversation_start"
     ).length;
 
-    const totalConversations = Math.max(currentConversations.length, widgetOpens);
-    const prevTotalConversations = Math.max(prevConversations.length, prevWidgetOpens);
+    const totalConversations = Math.max(currentConversationsCount, widgetOpens);
+    const prevTotalConversations = Math.max(prevConversationsCount, prevWidgetOpens);
 
     // Filter events by type
     const productClicks = currentEvents.filter(
@@ -259,7 +295,7 @@ export async function GET(req: NextRequest) {
     // Calculate real latency across conversation message pairs
     let totalLatencyMs = 0;
     let latencyCount = 0;
-    for (const c of currentConversations) {
+    for (const c of sampleConversations) {
       const msgs = c.messages || [];
       for (let i = 0; i < msgs.length - 1; i++) {
         if (msgs[i].role === "user" && msgs[i + 1]?.role === "assistant") {
@@ -424,10 +460,8 @@ export async function GET(req: NextRequest) {
       ],
     };
 
-    // Calculate real escalated count
-    const escalatedConvos = currentConversations.filter(
-      (c) => c.status === "escalated" || c.channel === "human" || (c.metadata as any)?.handoff === true
-    ).length;
+    // Real aggregated escalated count from database index
+    const escalatedConvos = escalatedConvosCount;
     const humanHandoffRate = totalConversations > 0 ? ((escalatedConvos / totalConversations) * 100).toFixed(1) : "0.0";
     const questionsAnsweredPct = totalConversations > 0 ? (((totalConversations - escalatedConvos) / totalConversations) * 100).toFixed(1) : "100.0";
 

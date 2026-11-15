@@ -115,6 +115,64 @@ export async function POST(req: NextRequest) {
   }
 }
 
+export async function PATCH(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { id, businessId, name, category, priceMin, durationMinutes, bookingUrl, status } = body;
+
+    if (!id) {
+      return NextResponse.json({ error: { message: "Service ID is required" } }, { status: 400 });
+    }
+
+    const tenant = await resolveCachedTenant(businessId);
+    if (!tenant || !tenant.business) {
+      return NextResponse.json({ error: { message: "No business found" } }, { status: 404 });
+    }
+    const currentBiz = tenant.business;
+
+    const existing = await prisma.service.findFirst({
+      where: { id, businessId: currentBiz.id },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: { message: "Service not found or access denied" } }, { status: 404 });
+    }
+
+    const priceNum = priceMin !== undefined ? parseFloat(priceMin) : undefined;
+    const durationNum = durationMinutes !== undefined ? parseInt(durationMinutes, 10) : undefined;
+
+    const updated = await prisma.service.update({
+      where: { id },
+      data: {
+        ...(name !== undefined ? { name: name.trim() } : {}),
+        ...(category !== undefined ? { category: category.trim() } : {}),
+        ...(priceNum !== undefined ? { priceMin: priceNum } : {}),
+        ...(durationNum !== undefined ? { durationMinutes: durationNum } : {}),
+        ...(bookingUrl !== undefined ? { bookingUrl: bookingUrl.trim() } : {}),
+        ...(status !== undefined ? { status } : {}),
+      },
+    });
+
+    return NextResponse.json({
+      status: "success",
+      service: {
+        id: updated.id,
+        name: updated.name,
+        category: updated.category,
+        priceMin: Number(updated.priceMin),
+        durationMinutes: updated.durationMinutes,
+        bookingUrl: updated.bookingUrl,
+        status: updated.status,
+      },
+    });
+  } catch (error: any) {
+    console.error("[Services PATCH API] Error:", error);
+    return NextResponse.json(
+      { error: { message: error?.message || "Failed to update service" } },
+      { status: 500 }
+    );
+  }
+}
+
 export async function DELETE(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);

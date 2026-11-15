@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
+import { ClientCache, executeSwr } from "@/lib/cache/clientCache";
 import { PerformanceChart } from "@/components/dashboard/PerformanceChart";
 import {
   Calendar,
@@ -198,8 +199,34 @@ export default function DashboardOverviewPage() {
   }, []);
 
   // Fetch Dashboard Overview Data
+  const applyDashboardData = (data: any) => {
+    if (data.user?.name) setUserName(data.user.name);
+    if (data.business?.name) setBusinessName(data.business.name);
+    if (data.metrics) setMetrics(data.metrics);
+    if (data.funnel) {
+      setFunnel(data.funnel);
+      if (data.funnel.stages && data.funnel.stages.length > 0) {
+        setHoveredFunnelStage(0);
+      }
+    }
+    if (Array.isArray(data.topProducts)) setTopProducts(data.topProducts);
+    if (Array.isArray(data.recentConversations)) setRecentConversations(data.recentConversations);
+    if (Array.isArray(data.unansweredQuestions)) setUnansweredQuestions(data.unansweredQuestions);
+    if (data.opportunity) setOpportunity(data.opportunity);
+  };
+
   const fetchDashboardData = async (rangeKey = selectedRange, silent = false) => {
-    if (!silent) setIsLoading(true);
+    const cacheKey = `client:overview:${rangeKey}`;
+    const cached = ClientCache.get<any>(cacheKey);
+
+    if (cached && !silent) {
+      applyDashboardData(cached);
+      setIsLoading(false);
+      if (ClientCache.isFresh(cacheKey)) return;
+      setIsRefreshing(true);
+    } else if (!silent) {
+      setIsLoading(true);
+    }
     else setIsRefreshing(true);
 
     try {
@@ -207,6 +234,8 @@ export default function DashboardOverviewPage() {
         cache: "no-store",
       });
       const data = await res.json();
+      ClientCache.set(cacheKey, data);
+      applyDashboardData(data);
 
       if (data.user?.name) setUserName(data.user.name);
       if (data.business?.name) setBusinessName(data.business.name);
@@ -241,6 +270,7 @@ export default function DashboardOverviewPage() {
   };
 
   const handleManualRefresh = () => {
+    ClientCache.invalidate("client:overview");
     fetchDashboardData(selectedRange, true);
     toast.success("Dashboard metrics synced with database!");
   };

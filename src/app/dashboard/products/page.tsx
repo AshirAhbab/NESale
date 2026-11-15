@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
+import { ClientCache } from "@/lib/cache/clientCache";
 import {
   Package,
   Wrench,
@@ -117,6 +118,17 @@ export default function ProductsPage() {
   const [serviceBookingUrl, setServiceBookingUrl] = useState("");
   const [isAddingService, setIsAddingService] = useState(false);
 
+  // Edit Service Modal state
+  const [isEditServiceModalOpen, setIsEditServiceModalOpen] = useState(false);
+  const [editServiceId, setEditServiceId] = useState("");
+  const [editServiceName, setEditServiceName] = useState("");
+  const [editServiceCategory, setEditServiceCategory] = useState("");
+  const [editServicePrice, setEditServicePrice] = useState("0");
+  const [editServiceDuration, setEditServiceDuration] = useState("30");
+  const [editServiceBookingUrl, setEditServiceBookingUrl] = useState("");
+  const [editServiceStatus, setEditServiceStatus] = useState<"active" | "paused">("active");
+  const [isSavingService, setIsSavingService] = useState(false);
+
   // AI Vector Tuning & Re-indexing states
   const [isTuning, setIsTuning] = useState(false);
   const [isReindexing, setIsReindexing] = useState(false);
@@ -135,11 +147,36 @@ export default function ProductsPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  const applyProductData = (data: any) => {
+    if (data.business?.name) setBusinessName(data.business.name);
+    if (data.business?.businessType) {
+      const type = data.business.businessType;
+      setBusinessType(type);
+      if (type === "services") setActiveTab("services");
+    }
+    if (Array.isArray(data.products)) {
+      setProducts(data.products);
+      if (data.products.length > 0) {
+        setSelectedProductId((prev) => prev || data.products[0].id);
+      }
+    }
+  };
+
   const loadProducts = async () => {
-    setIsLoading(true);
+    const cacheKey = "client:products";
+    const cached = ClientCache.get<any>(cacheKey);
+    if (cached) {
+      applyProductData(cached);
+      setIsLoading(false);
+      if (ClientCache.isFresh(cacheKey)) return;
+    } else {
+      setIsLoading(true);
+    }
+
     try {
       const res = await fetch("/api/v1/dashboard/products", { cache: "no-store" });
       const data = await res.json();
+      ClientCache.set("client:services", data);
       if (data.business?.name) {
         setBusinessName(data.business.name);
       }
@@ -166,6 +203,7 @@ export default function ProductsPage() {
     try {
       const res = await fetch("/api/v1/dashboard/services", { cache: "no-store" });
       const data = await res.json();
+      ClientCache.set("client:services", data);
       if (Array.isArray(data.services)) {
         setServices(data.services);
       }
@@ -212,6 +250,7 @@ export default function ProductsPage() {
       });
 
       const data = await res.json();
+      ClientCache.set("client:services", data);
       if (data.product) {
         setProducts((prev) => [data.product, ...prev]);
         setSelectedProductId(data.product.id);
@@ -257,6 +296,7 @@ export default function ProductsPage() {
       });
 
       const data = await res.json();
+      ClientCache.set("client:services", data);
       if (res.ok && data.product) {
         setProducts((prev) =>
           prev.map((p) => (p.id === editId ? { ...p, ...data.product } : p))
@@ -301,6 +341,77 @@ export default function ProductsPage() {
     }
   };
 
+  const handleOpenEditService = (s: ServiceRow) => {
+    setEditServiceId(s.id);
+    setEditServiceName(s.name);
+    setEditServiceCategory(s.category || "Consultation");
+    setEditServicePrice(s.priceMin.toString());
+    setEditServiceDuration((s.durationMinutes || 30).toString());
+    setEditServiceBookingUrl(s.bookingUrl || "");
+    setEditServiceStatus(s.status || "active");
+    setIsEditServiceModalOpen(true);
+  };
+
+  const handleSaveEditService = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editServiceName.trim()) return;
+    setIsSavingService(true);
+    try {
+      const res = await fetch("/api/v1/dashboard/services", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: editServiceId,
+          name: editServiceName.trim(),
+          category: editServiceCategory.trim() || "Consultation",
+          priceMin: editServicePrice,
+          durationMinutes: editServiceDuration,
+          bookingUrl: editServiceBookingUrl.trim(),
+          status: editServiceStatus,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.service) {
+        ClientCache.invalidate("client:services");
+        setServices((prev) =>
+          prev.map((s) => (s.id === editServiceId ? { ...s, ...data.service } : s))
+        );
+        toast.success(`Service "${editServiceName}" updated successfully!`);
+        setIsEditServiceModalOpen(false);
+      } else {
+        toast.error(data.error?.message || "Failed to update service");
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "Error updating service");
+    } finally {
+      setIsSavingService(false);
+    }
+  };
+
+  const handleToggleServiceStatus = async (s: ServiceRow) => {
+    const nextStatus = s.status === "active" ? "paused" : "active";
+    try {
+      const res = await fetch("/api/v1/dashboard/services", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: s.id,
+          status: nextStatus,
+        }),
+      });
+      if (res.ok) {
+        ClientCache.invalidate("client:services");
+        setServices((prev) =>
+          prev.map((item) => (item.id === s.id ? { ...item, status: nextStatus } : item))
+        );
+        toast.success(`Service "${s.name}" is now ${nextStatus}.`);
+      }
+    } catch {
+      toast.error("Failed to update status");
+    }
+  };
+
   const handleAddService = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!serviceName.trim()) return;
@@ -318,6 +429,7 @@ export default function ProductsPage() {
         }),
       });
       const data = await res.json();
+      ClientCache.set("client:services", data);
       if (res.ok && data.service) {
         setServices((prev) => [data.service, ...prev]);
         toast.success(`Service "${serviceName}" published and bookable!`);
@@ -346,6 +458,7 @@ export default function ProductsPage() {
         body: JSON.stringify({ id: selectedProduct.id, action: "tune_vectors" }),
       });
       const data = await res.json();
+      ClientCache.set("client:services", data);
       if (res.ok) {
         toast.success(data.message || `AI semantic attributes tuned for "${selectedProduct.name}".`);
       } else {
@@ -368,6 +481,7 @@ export default function ProductsPage() {
         body: JSON.stringify({ id: selectedProduct.id, action: "reindex" }),
       });
       const data = await res.json();
+      ClientCache.set("client:services", data);
       if (res.ok) {
         toast.success(data.message || `Knowledge vectors re-indexed for "${selectedProduct.name}".`);
       } else {
@@ -1378,18 +1492,38 @@ export default function ProductsPage() {
                       </a>
                     </td>
                     <td className="py-3.5 px-3">
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300">
-                        ACTIVE
-                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleServiceStatus(s)}
+                        title="Click to toggle active/paused"
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold cursor-pointer transition active:scale-[0.98] ${
+                          s.status === "active"
+                            ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-200"
+                            : "bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 hover:bg-amber-200"
+                        }`}
+                      >
+                        {s.status === "active" ? "ACTIVE" : "PAUSED"}
+                      </button>
                     </td>
                     <td className="py-3.5 px-3 text-right">
-                      <button
-                        onClick={() => handleDeleteService(s.id)}
-                        title="Remove service offering"
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditService(s)}
+                          title="Edit service details"
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition cursor-pointer"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteService(s.id)}
+                          title="Remove service offering"
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -1747,6 +1881,167 @@ export default function ProductsPage() {
           </div>
         </div>
       )}
+    
+      {/* Edit Service Modal */}
+      {isEditServiceModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs animate-fade-in">
+          <div className="bg-white dark:bg-[#11141d] rounded-3xl p-6 sm:p-8 max-w-md w-full border border-slate-100 dark:border-white/[0.08] shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-white/[0.08]">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Edit Service Offering
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Update booking parameters, duration, and fee structures for live shopper chat.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditServiceModalOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditService} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Service Title
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editServiceName}
+                  onChange={(e) => setEditServiceName(e.target.value)}
+                  placeholder="e.g. 1-on-1 Consultation"
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 dark:border-white/[0.08] bg-slate-50 dark:bg-[#171b26] text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Category
+                  </label>
+                  <input
+                    type="text"
+                    value={editServiceCategory}
+                    onChange={(e) => setEditServiceCategory(e.target.value)}
+                    placeholder="Consultation, Repair, etc."
+                    className="w-full px-3.5 py-2 rounded-xl border border-slate-200 dark:border-white/[0.08] bg-slate-50 dark:bg-[#171b26] text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Starting Fee ($ USD)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={editServicePrice}
+                    onChange={(e) => setEditServicePrice(e.target.value)}
+                    placeholder="0.00 for Free"
+                    className="w-full px-3.5 py-2 rounded-xl border border-slate-200 dark:border-white/[0.08] bg-slate-50 dark:bg-[#171b26] text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  Duration (Minutes)
+                </label>
+                <div className="flex items-center gap-1.5 flex-wrap mb-2">
+                  {[15, 30, 45, 60, 90, 120].map((mins) => (
+                    <button
+                      key={mins}
+                      type="button"
+                      onClick={() => setEditServiceDuration(mins.toString())}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                        editServiceDuration === mins.toString()
+                          ? "bg-indigo-600 text-white shadow-xs"
+                          : "bg-slate-100 dark:bg-white/[0.06] text-slate-600 dark:text-slate-300 hover:bg-slate-200"
+                      }`}
+                    >
+                      {mins < 60 ? `${mins}m` : `${mins / 60}h`}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="number"
+                  min="5"
+                  max="480"
+                  value={editServiceDuration}
+                  onChange={(e) => setEditServiceDuration(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 dark:border-white/[0.08] bg-slate-50 dark:bg-[#171b26] text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Calendar / Booking URL
+                </label>
+                <input
+                  type="url"
+                  value={editServiceBookingUrl}
+                  onChange={(e) => setEditServiceBookingUrl(e.target.value)}
+                  placeholder="https://calendly.com/... or Cal.com URL"
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 dark:border-white/[0.08] bg-slate-50 dark:bg-[#171b26] text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Service Availability Status
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditServiceStatus("active")}
+                    className={`py-2 px-3 rounded-xl text-xs font-bold transition cursor-pointer border ${
+                      editServiceStatus === "active"
+                        ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-300"
+                        : "border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-slate-400"
+                    }`}
+                  >
+                    ✓ Active (Bookable)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditServiceStatus("paused")}
+                    className={`py-2 px-3 rounded-xl text-xs font-bold transition cursor-pointer border ${
+                      editServiceStatus === "paused"
+                        ? "bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-300"
+                        : "border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-slate-400"
+                    }`}
+                  >
+                    ⏸ Paused
+                  </button>
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 dark:border-white/[0.08] flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsEditServiceModalOpen(false)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingService}
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-sm transition active:scale-[0.98] cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingService ? "Saving..." : "Save Changes"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
