@@ -25,6 +25,7 @@ import {
   BookOpen,
   CalendarDays,
   Clock,
+  Globe,
 } from "lucide-react";
 
 interface SidebarProps {
@@ -104,10 +105,12 @@ export const DashboardSidebar: React.FC<SidebarProps> = ({
 
   const operationItems: NavItem[] = isServices
     ? [
+        { label: "Websites", href: "/dashboard/integrations", icon: Globe },
         { label: "Billing", href: "/dashboard/billing", icon: CreditCard },
         { label: "Affiliate", href: "/dashboard/affiliate", icon: Tag },
       ]
     : [
+        { label: "Websites", href: "/dashboard/integrations", icon: Globe },
         { label: "Store", href: "/dashboard/store", icon: Store },
         { label: "Billing", href: "/dashboard/billing", icon: CreditCard },
         { label: "Affiliate", href: "/dashboard/affiliate", icon: Tag },

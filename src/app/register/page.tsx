@@ -31,9 +31,10 @@ export default function RegisterPage() {
 
   const [fullName, setFullName] = useState("");
   const [workEmail, setWorkEmail] = useState("");
-  const [websiteUrl, setWebsiteUrl] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [agreed, setAgreed] = useState(true);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -86,6 +87,19 @@ export default function RegisterPage() {
     setSuccessMessage(null);
     setLoading(true);
 
+    // Password confirmation validation
+    if (password.length < 8) {
+      setErrorMessage("Password must be at least 8 characters long.");
+      setLoading(false);
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setErrorMessage("Passwords do not match. Please re-enter.");
+      setLoading(false);
+      return;
+    }
+
     try {
       const redirectUrl =
         typeof window !== "undefined"
@@ -100,7 +114,6 @@ export default function RegisterPage() {
           emailRedirectTo: redirectUrl,
           data: {
             full_name: fullName.trim(),
-            website_url: websiteUrl.trim(),
           },
         },
       });
@@ -120,8 +133,7 @@ export default function RegisterPage() {
             userId: data.user.id,
             email: data.user.email,
             name: fullName.trim(),
-            websiteUrl: websiteUrl.trim(),
-            businessName: fullName.trim() ? `${fullName.trim()}'s Brand` : "Storefront",
+            businessName: fullName.trim() ? `${fullName.trim()}'s Workspace` : "My Workspace",
           }),
         }).catch((err) => console.warn("Sync warning:", err));
       }
@@ -423,73 +435,103 @@ export default function RegisterPage() {
                   </div>
                 </div>
 
-                {/* Website URL */}
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label htmlFor="websiteUrl" className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
-                      Website URL
-                    </label>
-                    <span className="text-[11px] text-slate-400">Store or business domain</span>
-                  </div>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-                      <Globe className="w-4 h-4" />
+                {/* 2-Column: Master Password & Confirm Password */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* Master Password */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label htmlFor="password" className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        Master Password
+                      </label>
+                      <span className={`text-[11px] font-semibold ${strength.text}`}>
+                        {strength.label}
+                      </span>
                     </div>
-                    <input
-                      id="websiteUrl"
-                      type="text"
-                      required
-                      value={websiteUrl}
-                      onChange={(e) => setWebsiteUrl(e.target.value)}
-                      placeholder="yourstore.com or https://yourstore.com"
-                      className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white text-sm bg-white dark:bg-white/[0.03] focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition"
-                    />
-                  </div>
-                </div>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                        <Lock className="w-4 h-4" />
+                      </div>
+                      <input
+                        id="password"
+                        type={showPassword ? "text" : "password"}
+                        required
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="••••••••••••"
+                        className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white text-sm bg-white dark:bg-white/[0.03] focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        aria-label={showPassword ? "Hide password" : "Show password"}
+                        className="absolute right-1 top-1/2 -translate-y-1/2 min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none cursor-pointer"
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
 
-                {/* Master Password */}
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label htmlFor="password" className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
-                      Master Password
-                    </label>
-                    <span className={`text-xs font-semibold ${strength.text}`}>
-                      {strength.label}
-                    </span>
-                  </div>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-                      <Lock className="w-4 h-4" />
+                    {/* Dynamic 4-bar password strength meter */}
+                    <div className="grid grid-cols-4 gap-1.5 mt-2">
+                      {[1, 2, 3, 4].map((level) => (
+                        <div
+                          key={level}
+                          className={`h-1 rounded-full transition-all duration-300 ${
+                            strength.score >= level ? strength.color : "bg-slate-100 dark:bg-white/[0.06]"
+                          }`}
+                        ></div>
+                      ))}
                     </div>
-                    <input
-                      id="password"
-                      type={showPassword ? "text" : "password"}
-                      required
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="••••••••••••"
-                      className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white text-sm bg-white dark:bg-white/[0.03] focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition font-mono"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      aria-label={showPassword ? "Hide password" : "Show password"}
-                      className="absolute right-1 top-1/2 -translate-y-1/2 min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none cursor-pointer"
-                    >
-                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
                   </div>
 
-                  {/* Dynamic 4-bar password strength meter */}
-                  <div className="grid grid-cols-4 gap-1.5 mt-2.5">
-                    {[1, 2, 3, 4].map((level) => (
-                      <div
-                        key={level}
-                        className={`h-1 rounded-full transition-all duration-300 ${
-                          strength.score >= level ? strength.color : "bg-slate-100 dark:bg-white/[0.06]"
+                  {/* Confirm Password */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label htmlFor="confirmPassword" className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        Confirm Password
+                      </label>
+                      {confirmPassword && (
+                        password === confirmPassword ? (
+                          <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                            <Check className="w-3 h-3" /> Match
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-semibold text-rose-500">
+                            Mismatch
+                          </span>
+                        )
+                      )}
+                    </div>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                        <Lock className="w-4 h-4" />
+                      </div>
+                      <input
+                        id="confirmPassword"
+                        type={showConfirmPassword ? "text" : "password"}
+                        required
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        placeholder="••••••••••••"
+                        className={`w-full pl-10 pr-10 py-2.5 rounded-xl border text-slate-900 dark:text-white text-sm bg-white dark:bg-white/[0.03] focus:outline-none focus:ring-2 transition font-mono ${
+                          confirmPassword && password !== confirmPassword
+                            ? "border-rose-400 dark:border-rose-700 focus:ring-rose-500/20 focus:border-rose-500"
+                            : confirmPassword && password === confirmPassword
+                            ? "border-emerald-400 dark:border-emerald-700 focus:ring-emerald-500/20 focus:border-emerald-500"
+                            : "border-slate-200 dark:border-white/[0.08] focus:ring-indigo-500/20 focus:border-indigo-600"
                         }`}
-                      ></div>
-                    ))}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                        aria-label={showConfirmPassword ? "Hide password" : "Show password"}
+                        className="absolute right-1 top-1/2 -translate-y-1/2 min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none cursor-pointer"
+                      >
+                        {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-1.5">
+                      Re-enter your master password to verify.
+                    </p>
                   </div>
                 </div>
 
@@ -507,11 +549,11 @@ export default function RegisterPage() {
                     <Link href="/terms" className="text-indigo-600 dark:text-indigo-400 hover:underline">
                       Terms of Service
                     </Link>
-                    ,{" "}
+                    {" "}and{" "}
                     <Link href="/privacy" className="text-indigo-600 dark:text-indigo-400 hover:underline">
                       Privacy Policy
                     </Link>
-                    , and authorize NESale to index public product catalog specs.
+                    . You can link your store domain or website anytime inside your dashboard integrations hub.
                   </label>
                 </div>
 
@@ -528,7 +570,7 @@ export default function RegisterPage() {
                     </>
                   ) : (
                     <>
-                      <span>Create Account & Connect Store</span>
+                      <span>Create Free Account</span>
                       <ArrowRight className="w-4 h-4" />
                     </>
                   )}

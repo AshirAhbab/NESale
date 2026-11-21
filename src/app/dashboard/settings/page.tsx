@@ -29,6 +29,7 @@ import {
   ArrowRight,
   ShieldCheck,
   Zap,
+  Globe,
 } from "lucide-react";
 import { useTheme } from "@/lib/theme/context";
 import { toast } from "@/components/ui/Toast";
@@ -588,6 +589,23 @@ export default function SettingsPage() {
             Configure third-party ecommerce connectors and event webhooks.
           </p>
           <div className="space-y-3 pt-1">
+            <div className="p-4 rounded-2xl bg-slate-50/60 dark:bg-[#171b26] border border-slate-100 dark:border-white/[0.08] flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center font-bold text-xs">
+                  <Globe className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-slate-900 dark:text-white">Connected Websites &amp; Domains</h4>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Manage multi-domain storefronts and embed snippets.</p>
+                </div>
+              </div>
+              <Link
+                href="/dashboard/integrations"
+                className="px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 text-xs font-semibold hover:bg-indigo-100 transition"
+              >
+                Manage Domains &rarr;
+              </Link>
+            </div>
             <div className="p-4 rounded-2xl bg-slate-50/60 dark:bg-[#171b26] border border-slate-100 dark:border-white/[0.08] flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold text-xs">

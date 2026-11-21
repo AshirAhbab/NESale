@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
         businessSubtype: isServicesBusiness(businessType)
           ? normalizeServiceSubtype(businessSubtype) || "other"
           : null,
-        websiteUrl: websiteUrl || "https://example.com",
+        websiteUrl: websiteUrl ? (websiteUrl.startsWith("http") ? websiteUrl : `https://${websiteUrl}`) : null,
         description: "Autonomous AI sales-assisted storefront",
       },
     });
