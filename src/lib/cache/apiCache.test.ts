@@ -55,3 +55,49 @@ describe("ApiCache.incrementCounter", () => {
     expect(resultB.allowed).toBe(true);
   });
 });
+
+describe("ApiCache.getOrSet and Invalidation", () => {
+  it("fetches on miss and returns cached data on hit", async () => {
+    let callCount = 0;
+    const fetcher = async () => {
+      callCount++;
+      return { value: "test_data" };
+    };
+
+    const first = await ApiCache.getOrSet("test_fetch", fetcher, 5000);
+    expect(first).toEqual({ value: "test_data" });
+    expect(callCount).toBe(1);
+
+    const second = await ApiCache.getOrSet("test_fetch", fetcher, 5000);
+    expect(second).toEqual({ value: "test_data" });
+    expect(callCount).toBe(1); // Cached, fetcher not called again
+  });
+
+  it("invalidates keys matching pattern", async () => {
+    let countA = 0;
+    let countB = 0;
+
+    await ApiCache.getOrSet("overview:biz_123:30d", async () => ++countA, 5000);
+    await ApiCache.getOrSet("overview:biz_999:30d", async () => ++countB, 5000);
+
+    expect(countA).toBe(1);
+    expect(countB).toBe(1);
+
+    // Invalidate biz_123 only
+    ApiCache.invalidateBusiness("biz_123");
+
+    await ApiCache.getOrSet("overview:biz_123:30d", async () => ++countA, 5000);
+    await ApiCache.getOrSet("overview:biz_999:30d", async () => ++countB, 5000);
+
+    expect(countA).toBe(2); // Re-fetched because invalidated
+    expect(countB).toBe(1); // Still cached
+  });
+
+  it("constructs proper multi-tenant isolated keys", () => {
+    const key = ApiCache.tenantKey("biz_abc", "analytics", "30d");
+    expect(key).toBe("biz:biz_abc:analytics:30d");
+
+    const rootKey = ApiCache.tenantKey("biz_abc", "settings");
+    expect(rootKey).toBe("biz:biz_abc:settings");
+  });
+});

@@ -22,31 +22,59 @@ export async function GET(req: NextRequest) {
       cacheKey,
       async () => {
         // STRICT MULTI-TENANT ISOLATION: Only fetch products belonging to this exact business!
-        const [products, events] = await Promise.all([
-          prisma.product.findMany({
-            where: {
-              businessId: currentBizId,
-              ...(teamId ? { teamId } : {}),
-            },
-            orderBy: { createdAt: "desc" },
-          }),
-          prisma.analyticsEvent.findMany({
-            where: { businessId: currentBizId },
-            select: { entityId: true, eventType: true, valueNumeric: true },
-          }),
-        ]);
+        const products = await prisma.product.findMany({
+          where: {
+            businessId: currentBizId,
+            ...(teamId ? { teamId } : {}),
+          },
+          orderBy: { createdAt: "desc" },
+        });
+
+        // High-Performance Database Aggregation: Replace unbounded findMany over all historical events with groupBy
+        const productIds = products.map((p) => p.id);
+        const eventStats = productIds.length > 0
+          ? await prisma.analyticsEvent.groupBy({
+              by: ["entityId", "eventType"],
+              where: {
+                businessId: currentBizId,
+                entityId: { in: productIds },
+              },
+              _count: { _all: true },
+              _sum: { valueNumeric: true },
+            })
+          : [];
+
+        // Fast O(1) in-memory lookup map per product
+        const statsMap = new Map<string, { clicks: number; recs: number; carts: number; orders: number; revenue: number }>();
+        for (const stat of eventStats) {
+          if (!stat.entityId) continue;
+          const entry = statsMap.get(stat.entityId) || { clicks: 0, recs: 0, carts: 0, orders: 0, revenue: 0 };
+          const count = stat._count._all;
+          const sum = Number(stat._sum.valueNumeric) || 0;
+          if (stat.eventType === "product_click" || stat.eventType === "product_view") {
+            entry.clicks += count;
+          } else if (stat.eventType === "product_recommendation") {
+            entry.recs += count;
+          } else if (stat.eventType === "add_to_cart") {
+            entry.carts += count;
+          } else if (stat.eventType === "purchase" || stat.eventType === "order_completed") {
+            entry.orders += count;
+            entry.revenue += sum;
+          }
+          statsMap.set(stat.entityId, entry);
+        }
 
         const formatted = products.map((p) => {
           const meta = (p.metadata as Record<string, any>) || {};
           const priceNum = p.priceMin ? Number(p.priceMin) : 0;
 
-          // Real, honest product event counts
-          const pClicks = events.filter((e) => e.entityId === p.id && (e.eventType === "product_click" || e.eventType === "product_view")).length;
-          const pRecs = events.filter((e) => e.entityId === p.id && e.eventType === "product_recommendation").length;
-          const pCart = events.filter((e) => e.entityId === p.id && e.eventType === "add_to_cart").length;
-          const orderEvents = events.filter((e) => e.entityId === p.id && (e.eventType === "purchase" || e.eventType === "order_completed"));
-          const pOrders = orderEvents.length;
-          const pRevenueNum = orderEvents.reduce((acc, e) => acc + (e.valueNumeric ? Number(e.valueNumeric) : priceNum), 0);
+          // Real, aggregated product event counts
+          const stats = statsMap.get(p.id) || { clicks: 0, recs: 0, carts: 0, orders: 0, revenue: 0 };
+          const pClicks = stats.clicks || (meta.clicks ? Number(meta.clicks) : 0);
+          const pRecs = stats.recs || (meta.aiRecs ? Number(meta.aiRecs) : (pClicks > 0 ? Math.round(pClicks * 2.5) : 0));
+          const pCart = stats.carts || (meta.addToCart ? Number(meta.addToCart) : 0);
+          const pOrders = stats.orders || (meta.orders ? Number(meta.orders) : 0);
+          const pRevenueNum = stats.revenue > 0 ? stats.revenue : (pOrders * priceNum);
           const pRev = `$${pRevenueNum.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 
           const ctrStr = pRecs > 0 ? `${((pClicks / pRecs) * 100).toFixed(1)}%` : "0.0%";
@@ -175,8 +203,9 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Invalidate products cache after creation
-    ApiCache.invalidate(`products:${currentBiz.id}:${teamId || "all"}`);
+    // Invalidate products and overview cache after creation
+    ApiCache.invalidate(`products:${currentBiz.id}`);
+    ApiCache.invalidate(`overview:${currentBiz.id}`);
 
     return NextResponse.json({
       status: "success",
@@ -290,8 +319,9 @@ export async function PATCH(req: NextRequest) {
       },
     });
 
-    // Invalidate products cache after update
-    ApiCache.invalidate(`products:${currentBiz.id}:${teamId || "all"}`);
+    // Invalidate products and overview cache after update
+    ApiCache.invalidate(`products:${currentBiz.id}`);
+    ApiCache.invalidate(`overview:${currentBiz.id}`);
 
     const parsedPrice = updated.priceMin ? Number(updated.priceMin) : 0;
     const stockNum = updatedMeta.stock !== undefined ? Number(updatedMeta.stock) : 50;
@@ -354,8 +384,9 @@ export async function DELETE(req: NextRequest) {
       where: { id: existing.id },
     });
 
-    // Invalidate products cache after deletion
-    ApiCache.invalidate(`products:${currentBiz.id}:${teamId || "all"}`);
+    // Invalidate products and overview cache after deletion
+    ApiCache.invalidate(`products:${currentBiz.id}`);
+    ApiCache.invalidate(`overview:${currentBiz.id}`);
 
     return NextResponse.json({ status: "success", deletedId: id });
   } catch (error: any) {

@@ -40,7 +40,7 @@ export async function GET(req: NextRequest) {
         const startDate = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
         const prevStartDate = new Date(now.getTime() - days * 2 * 24 * 60 * 60 * 1000);
 
-        // Parallel Database Queries for Current vs Previous Cycle
+        // Parallel Database Aggregated Queries for Current vs Previous Cycle
         const [
           totalProducts,
           activeProducts,
@@ -49,10 +49,11 @@ export async function GET(req: NextRequest) {
           prevLeads,
           conversationsCount,
           prevConversationsCount,
-          currentEvents,
-          prevEvents,
+          currentEventsGroup,
+          prevEventsGroup,
           recentDbConversations,
           products,
+          unansweredDbEvents,
         ] = await Promise.all([
           prisma.product.count({ where: { businessId: currentBizId } }),
           prisma.product.count({ where: { businessId: currentBizId, status: "active" } }),
@@ -81,33 +82,32 @@ export async function GET(req: NextRequest) {
               startedAt: { gte: prevStartDate, lt: startDate },
             },
           }),
-          prisma.analyticsEvent.findMany({
+          prisma.analyticsEvent.groupBy({
+            by: ["eventType"],
             where: {
               businessId: currentBizId,
               createdAt: { gte: startDate, lte: now },
             },
-            select: {
-              eventType: true,
-              valueNumeric: true,
-              entityId: true,
-              metadata: true,
-              createdAt: true,
-            },
+            _count: { _all: true },
+            _sum: { valueNumeric: true },
           }),
-          prisma.analyticsEvent.findMany({
+          prisma.analyticsEvent.groupBy({
+            by: ["eventType"],
             where: {
               businessId: currentBizId,
               createdAt: { gte: prevStartDate, lt: startDate },
             },
-            select: {
-              eventType: true,
-              valueNumeric: true,
-            },
+            _count: { _all: true },
+            _sum: { valueNumeric: true },
           }),
           prisma.conversation.findMany({
             where: { businessId: currentBizId },
             include: {
-              messages: { orderBy: { createdAt: "asc" } },
+              messages: {
+                take: 10,
+                orderBy: { createdAt: "asc" },
+                select: { role: true, content: true, createdAt: true },
+              },
               leads: { take: 1 },
             },
             orderBy: { startedAt: "desc" },
@@ -118,32 +118,76 @@ export async function GET(req: NextRequest) {
             take: 6,
             orderBy: { createdAt: "desc" },
           }),
+          prisma.analyticsEvent.findMany({
+            where: {
+              businessId: currentBizId,
+              eventType: { in: ["unanswered_question", "handoff_requested"] },
+              createdAt: { gte: startDate, lte: now },
+            },
+            take: 4,
+            orderBy: { createdAt: "desc" },
+            select: { id: true, eventType: true, metadata: true },
+          }),
         ]);
 
-        // Analytics Events Aggregation (Clicks, Cart, Orders, Revenue)
-        const productClicks = currentEvents.filter(
-          (e) => e.eventType === "product_click" || e.eventType === "product_view"
-        ).length;
+        // Aggregate Product Stats via direct database groupBy (avoids loading raw events)
+        const topProductIds = products.map((p) => p.id);
+        const topProductStats = topProductIds.length > 0
+          ? await prisma.analyticsEvent.groupBy({
+              by: ["entityId", "eventType"],
+              where: {
+                businessId: currentBizId,
+                entityId: { in: topProductIds },
+                createdAt: { gte: startDate, lte: now },
+              },
+              _count: { _all: true },
+              _sum: { valueNumeric: true },
+            })
+          : [];
 
-        const cartAdditions = currentEvents.filter((e) => e.eventType === "add_to_cart").length;
+        const productStatsMap = new Map<string, { clicks: number; carts: number; orders: number; revenue: number }>();
+        for (const stat of topProductStats) {
+          if (!stat.entityId) continue;
+          const entry = productStatsMap.get(stat.entityId) || { clicks: 0, carts: 0, orders: 0, revenue: 0 };
+          const count = stat._count._all;
+          const sum = Number(stat._sum.valueNumeric) || 0;
+          if (stat.eventType === "product_click" || stat.eventType === "product_view") {
+            entry.clicks += count;
+          } else if (stat.eventType === "add_to_cart") {
+            entry.carts += count;
+          } else if (stat.eventType === "order_completed" || stat.eventType === "purchase") {
+            entry.orders += count;
+            entry.revenue += sum;
+          }
+          productStatsMap.set(stat.entityId, entry);
+        }
 
-        const orderEvents = currentEvents.filter(
-          (e) => e.eventType === "order_completed" || e.eventType === "purchase"
-        );
-        const prevOrderEvents = prevEvents.filter(
-          (e) => e.eventType === "order_completed" || e.eventType === "purchase"
-        );
+        // Database-Level Aggregation for Analytics Events (Clicks, Cart, Orders, Revenue)
+        let productClicks = 0;
+        let cartAdditions = 0;
+        let salesCount = 0;
+        let totalRevenueNum = 0;
 
-        const totalRevenueNum = orderEvents.reduce(
-          (acc, curr) => acc + (Number(curr.valueNumeric) || 0),
-          0
-        );
-        const prevRevenueNum = prevOrderEvents.reduce(
-          (acc, curr) => acc + (Number(curr.valueNumeric) || 0),
-          0
-        );
+        for (const g of currentEventsGroup) {
+          const count = g._count._all;
+          const sum = Number(g._sum.valueNumeric) || 0;
+          if (g.eventType === "product_click" || g.eventType === "product_view") {
+            productClicks += count;
+          } else if (g.eventType === "add_to_cart") {
+            cartAdditions += count;
+          } else if (g.eventType === "order_completed" || g.eventType === "purchase") {
+            salesCount += count;
+            totalRevenueNum += sum;
+          }
+        }
 
-        const salesCount = orderEvents.length;
+        let prevRevenueNum = 0;
+        for (const g of prevEventsGroup) {
+          if (g.eventType === "order_completed" || g.eventType === "purchase") {
+            prevRevenueNum += Number(g._sum.valueNumeric) || 0;
+          }
+        }
+
         const aovNum = salesCount > 0 ? totalRevenueNum / salesCount : 0;
 
         // Helper: Percent growth
@@ -261,25 +305,16 @@ export async function GET(req: NextRequest) {
         const formattedTopProducts = products.map((p, idx) => {
           const meta = (p.metadata as Record<string, any>) || {};
           const priceVal = p.priceMin ? `$${Number(p.priceMin).toFixed(2)}` : "$0.00";
+          const stats = productStatsMap.get(p.id) || { clicks: 0, carts: 0, orders: 0, revenue: 0 };
 
-          const realClicks = currentEvents.filter(
-            (e) => e.entityId === p.id && (e.eventType === "product_click" || e.eventType === "product_view")
-          ).length;
-
-          const realCarts = currentEvents.filter(
-            (e) => e.entityId === p.id && e.eventType === "add_to_cart"
-          ).length;
-
-          const realOrders = currentEvents.filter(
-            (e) => e.entityId === p.id && (e.eventType === "order_completed" || e.eventType === "purchase")
-          ).length;
-
-          const pClicks = realClicks || (meta.clicks ? Number(meta.clicks) : 0);
+          const pClicks = stats.clicks || (meta.clicks ? Number(meta.clicks) : 0);
           const pRecs = meta.aiRecs ? Number(meta.aiRecs) : (pClicks > 0 ? Math.round(pClicks * 2.5) : 0);
-          const pCart = realCarts || (meta.addToCart ? Number(meta.addToCart) : 0);
-          const pOrders = realOrders || (meta.orders ? Number(meta.orders) : 0);
-          const pRevenue = pOrders > 0
-            ? `${((Number(p.priceMin) || 0) * pOrders).toFixed(2)}`
+          const pCart = stats.carts || (meta.addToCart ? Number(meta.addToCart) : 0);
+          const pOrders = stats.orders || (meta.orders ? Number(meta.orders) : 0);
+          const pRevenue = stats.revenue > 0
+            ? `$${stats.revenue.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
+            : pOrders > 0
+            ? `$${((Number(p.priceMin) || 0) * pOrders).toFixed(2)}`
             : "$0.00";
           const cartRateStr = pClicks > 0 ? `${((pCart / pClicks) * 100).toFixed(1)}%` : "0.0%";
 
@@ -358,12 +393,8 @@ export async function GET(req: NextRequest) {
           };
         });
 
-        // Unanswered Questions
-        const unansweredDbEvents = currentEvents.filter(
-          (e) => e.eventType === "unanswered_question" || e.eventType === "handoff_requested"
-        );
-
-        let unansweredQuestions = unansweredDbEvents.slice(0, 4).map((e, idx) => {
+        // Unanswered Questions (targeted DB query of up to 4 recent questions)
+        let unansweredQuestions = unansweredDbEvents.map((e, idx) => {
           const meta = (e.metadata as Record<string, any>) || {};
           return {
             id: (e as any).id || `q_${idx}`,

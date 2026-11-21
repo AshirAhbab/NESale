@@ -68,7 +68,12 @@ export async function getTenantKnowledge(businessId?: string): Promise<Knowledge
     const chunks = await prisma.knowledgeChunk.findMany({
       where: businessId ? { businessId } : undefined,
       include: {
-        source: true,
+        source: {
+          select: {
+            title: true,
+            sourceUrl: true,
+          },
+        },
       },
       take: 50,
     });

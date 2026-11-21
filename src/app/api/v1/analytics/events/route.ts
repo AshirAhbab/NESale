@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { ApiCache } from "@/lib/cache/apiCache";
 import { ensureSeedData } from "@/lib/db/seed";
 
 export async function POST(req: NextRequest) {
@@ -53,6 +54,12 @@ export async function POST(req: NextRequest) {
         metadata,
       },
     });
+
+    // Targeted invalidation on high-value revenue events
+    if (eventType === "order_completed" || eventType === "purchase") {
+      ApiCache.invalidate(`overview:${currentBizId}`);
+      ApiCache.invalidate(`analytics:${currentBizId}`);
+    }
 
     return NextResponse.json({
       status: "success",

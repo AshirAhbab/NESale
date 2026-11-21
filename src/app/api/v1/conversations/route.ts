@@ -16,19 +16,32 @@ export async function GET(req: NextRequest) {
     }
 
     const currentBizId = tenant.business.id;
+    const limit = Math.min(Number(searchParams.get("limit")) || 30, 50);
 
     const dbConversations = await prisma.conversation.findMany({
       where: { businessId: currentBizId },
       include: {
         messages: {
+          take: 30,
           orderBy: { createdAt: "asc" },
+          select: {
+            id: true,
+            role: true,
+            content: true,
+            createdAt: true,
+          },
         },
         leads: {
           take: 1,
+          select: {
+            name: true,
+            email: true,
+            phone: true,
+          },
         },
       },
       orderBy: { startedAt: "desc" },
-      take: 50,
+      take: limit,
     });
 
     if (dbConversations.length > 0) {

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { ApiCache } from "@/lib/cache/apiCache";
 import { merchantNotifier } from "@/lib/notifications/notifier";
 import { rateLimiter } from "@/lib/security/rateLimiter";
 import { resolveCachedTenant } from "@/lib/cache/tenantMemo";
@@ -144,6 +145,9 @@ export async function POST(req: NextRequest) {
         status: "new",
       },
     });
+
+    // Invalidate tenant overview and analytics cache on new lead
+    ApiCache.invalidate(business.id);
 
     const newLead: LeadItem = {
       id: created.id,

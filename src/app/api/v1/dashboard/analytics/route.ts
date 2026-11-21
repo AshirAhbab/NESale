@@ -35,8 +35,8 @@ export async function GET(req: NextRequest) {
       prevConversationsCount,
       escalatedConvosCount,
       sampleConversations,
-      currentEvents,
-      prevEvents,
+      currentEventGroups,
+      prevEventGroups,
     ] = await Promise.all([
       prisma.conversation.count({
         where: {
@@ -69,74 +69,72 @@ export async function GET(req: NextRequest) {
         },
         take: 15,
         orderBy: { startedAt: "desc" },
-        include: {
+        select: {
           messages: {
             take: 10,
             orderBy: { createdAt: "asc" },
+            select: { role: true, createdAt: true },
           },
         },
       }),
-      // Fetch current events with targeted selection
-      prisma.analyticsEvent.findMany({
+      // High-performance database-aggregated current period event groups
+      prisma.analyticsEvent.groupBy({
+        by: ["eventType"],
         where: {
           businessId: currentBizId,
           createdAt: { gte: startDate },
         },
-        select: {
-          id: true,
-          eventType: true,
-          entityId: true,
-          valueNumeric: true,
-          createdAt: true,
-          metadata: true,
-        },
-        orderBy: { createdAt: "asc" },
+        _count: { _all: true },
+        _sum: { valueNumeric: true },
       }),
-      // Previous period events - lean select
-      prisma.analyticsEvent.findMany({
+      // High-performance database-aggregated previous period event groups
+      prisma.analyticsEvent.groupBy({
+        by: ["eventType"],
         where: {
           businessId: currentBizId,
           createdAt: { gte: prevStartDate, lt: startDate },
         },
-        select: {
-          eventType: true,
-          valueNumeric: true,
-        },
+        _count: { _all: true },
+        _sum: { valueNumeric: true },
       }),
     ]);
 
+    // Fast helper to aggregate counts and values by event types
+    const aggregateGroup = (groups: typeof currentEventGroups, types: string[]) => {
+      let count = 0;
+      let sum = 0;
+      for (const g of groups) {
+        if (types.includes(g.eventType)) {
+          count += g._count._all;
+          sum += Number(g._sum.valueNumeric) || 0;
+        }
+      }
+      return { count, sum };
+    };
+
     // Widget opens / conversations
-    const widgetOpens = currentEvents.filter(
-      (e) => e.eventType === "widget_open" || e.eventType === "conversation_start"
-    ).length;
-    const prevWidgetOpens = prevEvents.filter(
-      (e) => e.eventType === "widget_open" || e.eventType === "conversation_start"
-    ).length;
+    const currentWidgets = aggregateGroup(currentEventGroups, ["widget_open", "conversation_start"]);
+    const prevWidgets = aggregateGroup(prevEventGroups, ["widget_open", "conversation_start"]);
 
-    const totalConversations = Math.max(currentConversationsCount, widgetOpens);
-    const prevTotalConversations = Math.max(prevConversationsCount, prevWidgetOpens);
+    const totalConversations = Math.max(currentConversationsCount, currentWidgets.count);
+    const prevTotalConversations = Math.max(prevConversationsCount, prevWidgets.count);
 
-    // Filter events by type
-    const productClicks = currentEvents.filter(
-      (e) => e.eventType === "product_click" || e.eventType === "product_view"
-    ).length;
-    const prevProductClicks = prevEvents.filter(
-      (e) => e.eventType === "product_click" || e.eventType === "product_view"
-    ).length;
+    // Filter events by type via database aggregates
+    const currentClicks = aggregateGroup(currentEventGroups, ["product_click", "product_view"]);
+    const prevClicks = aggregateGroup(prevEventGroups, ["product_click", "product_view"]);
+    const productClicks = currentClicks.count;
+    const prevProductClicks = prevClicks.count;
 
-    const cartAdditions = currentEvents.filter((e) => e.eventType === "add_to_cart").length;
-    const prevCartAdditions = prevEvents.filter((e) => e.eventType === "add_to_cart").length;
+    const currentCarts = aggregateGroup(currentEventGroups, ["add_to_cart"]);
+    const prevCarts = aggregateGroup(prevEventGroups, ["add_to_cart"]);
+    const cartAdditions = currentCarts.count;
+    const prevCartAdditions = prevCarts.count;
 
-    const orderEvents = currentEvents.filter(
-      (e) => e.eventType === "order_completed" || e.eventType === "purchase"
-    );
-    const prevOrderEvents = prevEvents.filter(
-      (e) => e.eventType === "order_completed" || e.eventType === "purchase"
-    );
-
-    const totalRevenue = orderEvents.reduce((acc, curr) => acc + (Number(curr.valueNumeric) || 0), 0);
-    const prevRevenue = prevOrderEvents.reduce((acc, curr) => acc + (Number(curr.valueNumeric) || 0), 0);
-    const orderCount = orderEvents.length;
+    const currentOrders = aggregateGroup(currentEventGroups, ["order_completed", "purchase"]);
+    const prevOrders = aggregateGroup(prevEventGroups, ["order_completed", "purchase"]);
+    const totalRevenue = currentOrders.sum;
+    const prevRevenue = prevOrders.sum;
+    const orderCount = currentOrders.count;
     const aov = orderCount > 0 ? totalRevenue / orderCount : 0;
 
     // Calculate percentage changes
@@ -146,50 +144,59 @@ export async function GET(req: NextRequest) {
       return `${diff >= 0 ? "+" : ""}${diff.toFixed(1)}%`;
     };
 
-    // Build Time-Series Chart Points (divide the interval into 7 visual checkpoints)
+    // Build Time-Series Chart Points (divide the interval into 7 visual checkpoints using parallel DB groupBys)
     const pointsCount = 7;
     const intervalMs = (days * 24 * 60 * 60 * 1000) / (pointsCount - 1);
-    const chartPoints = [];
     const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-    let peakDayRevenue = 0;
-    let peakDayDate = "";
-
+    const sliceBoundaries: { start: Date; end: Date; pTime: Date; isLast: boolean; dateLabel: string }[] = [];
     for (let i = 0; i < pointsCount; i++) {
       const pTime = new Date(startDate.getTime() + i * intervalMs);
       const isLast = i === pointsCount - 1;
       const dateLabel = `${monthNames[pTime.getMonth()]} ${String(pTime.getDate()).padStart(2, "0")}${
         isLast ? " (Today)" : ""
       }`;
-
-      // Events falling within this slice
       const sliceStart = new Date(pTime.getTime() - intervalMs / 2);
       const sliceEnd = new Date(pTime.getTime() + intervalMs / 2);
+      sliceBoundaries.push({ start: sliceStart, end: sliceEnd, pTime, isLast, dateLabel });
+    }
 
-      const sliceOrders = orderEvents.filter((e) => e.createdAt >= sliceStart && e.createdAt < sliceEnd);
-      const sliceCart = currentEvents.filter(
-        (e) => e.eventType === "add_to_cart" && e.createdAt >= sliceStart && e.createdAt < sliceEnd
-      );
-      const sliceClicks = currentEvents.filter(
-        (e) => (e.eventType === "product_click" || e.eventType === "product_view") &&
-               e.createdAt >= sliceStart && e.createdAt < sliceEnd
-      );
-      const sliceConvos = currentEvents.filter(
-        (e) =>
-          (e.eventType === "widget_open" || e.eventType === "conversation_start") &&
-          e.createdAt >= sliceStart &&
-          e.createdAt < sliceEnd
-      );
+    const sliceResults = await Promise.all(
+      sliceBoundaries.map((s) =>
+        prisma.analyticsEvent.groupBy({
+          by: ["eventType"],
+          where: {
+            businessId: currentBizId,
+            createdAt: { gte: s.start, lt: s.end },
+          },
+          _count: { _all: true },
+          _sum: { valueNumeric: true },
+        })
+      )
+    );
 
-      const sliceRev = sliceOrders.reduce((sum, o) => sum + (Number(o.valueNumeric) || 0), 0);
-      const sliceOrdersCount = sliceOrders.length;
-      const sliceCartCount = sliceCart.length;
-      const sliceClicksCount = sliceClicks.length;
-      const sliceConvosCount = sliceConvos.length;
+    let peakDayRevenue = 0;
+    let peakDayDate = "";
+    const chartPoints = [];
+
+    for (let i = 0; i < pointsCount; i++) {
+      const slice = sliceBoundaries[i];
+      const sliceEvents = sliceResults[i];
+
+      const sliceOrders = aggregateGroup(sliceEvents, ["order_completed", "purchase"]);
+      const sliceCart = aggregateGroup(sliceEvents, ["add_to_cart"]);
+      const sliceClicks = aggregateGroup(sliceEvents, ["product_click", "product_view"]);
+      const sliceConvos = aggregateGroup(sliceEvents, ["widget_open", "conversation_start"]);
+
+      const sliceRev = sliceOrders.sum;
+      const sliceOrdersCount = sliceOrders.count;
+      const sliceCartCount = sliceCart.count;
+      const sliceClicksCount = sliceClicks.count;
+      const sliceConvosCount = sliceConvos.count;
 
       if (sliceRev > peakDayRevenue) {
         peakDayRevenue = sliceRev;
-        peakDayDate = `${monthNames[pTime.getMonth()]} ${String(pTime.getDate()).padStart(2, "0")}`;
+        peakDayDate = `${monthNames[slice.pTime.getMonth()]} ${String(slice.pTime.getDate()).padStart(2, "0")}`;
       }
 
       const conversionRate =
@@ -202,7 +209,7 @@ export async function GET(req: NextRequest) {
       const benchRev = sliceRev > 0 ? Math.round(sliceRev * 0.85) : 0;
 
       chartPoints.push({
-        date: dateLabel,
+        date: slice.dateLabel,
         revenue: Math.round(sliceRev),
         orders: sliceOrdersCount,
         cart: sliceCartCount,
@@ -210,7 +217,7 @@ export async function GET(req: NextRequest) {
         convos: sliceConvosCount,
         rate: parseFloat(conversionRate),
         bench: benchRev,
-        change: isLast ? calcPct(totalRevenue, prevRevenue) : undefined,
+        change: slice.isLast ? calcPct(totalRevenue, prevRevenue) : undefined,
       });
     }
 
@@ -221,29 +228,51 @@ export async function GET(req: NextRequest) {
       orderBy: { createdAt: "desc" },
     });
 
-    const recommendedProducts = dbProducts.map((p, idx) => {
+    const topProductIds = dbProducts.map((p) => p.id);
+    const productEventGroups = topProductIds.length > 0
+      ? await prisma.analyticsEvent.groupBy({
+          by: ["entityId", "eventType"],
+          where: {
+            businessId: currentBizId,
+            entityId: { in: topProductIds },
+            createdAt: { gte: startDate },
+          },
+          _count: { _all: true },
+          _sum: { valueNumeric: true },
+        })
+      : [];
+
+    const productStatsMap = new Map<string, { clicks: number; carts: number; orders: number; revenue: number }>();
+    for (const g of productEventGroups) {
+      if (!g.entityId) continue;
+      const entry = productStatsMap.get(g.entityId) || { clicks: 0, carts: 0, orders: 0, revenue: 0 };
+      if (g.eventType === "product_click" || g.eventType === "product_view") {
+        entry.clicks += g._count._all;
+      } else if (g.eventType === "add_to_cart") {
+        entry.carts += g._count._all;
+      } else if (g.eventType === "order_completed" || g.eventType === "purchase") {
+        entry.orders += g._count._all;
+        entry.revenue += Number(g._sum.valueNumeric) || 0;
+      }
+      productStatsMap.set(g.entityId, entry);
+    }
+
+    const recommendedProducts = dbProducts.map((p) => {
       const meta = (p.metadata as Record<string, any>) || {};
       const priceVal = Number(p.priceMin) || 45;
+      const stats = productStatsMap.get(p.id) || { clicks: 0, carts: 0, orders: 0, revenue: 0 };
 
-      const pClicks = currentEvents.filter(
-        (e) =>
-          (e.entityId === p.id || (e.metadata as any)?.productId === p.id) &&
-          (e.eventType === "product_click" || e.eventType === "product_view")
-      ).length;
-      const pCarts = currentEvents.filter(
-        (e) =>
-          (e.entityId === p.id || (e.metadata as any)?.productId === p.id) &&
-          e.eventType === "add_to_cart"
-      ).length;
-      const pOrders = orderEvents.filter(
-        (e) => e.entityId === p.id || (e.metadata as any)?.productId === p.id
-      ).length;
+      const pClicks = stats.clicks;
+      const pCarts = stats.carts;
+      const pOrders = stats.orders;
 
       const recs = meta.aiRecs ?? (pClicks > 0 ? Math.round(pClicks * 2.5) : 0);
       const clicks = meta.clicks ?? pClicks;
       const cart = meta.addToCart ?? pCarts;
       const orders = meta.orders ?? pOrders;
-      const rev = meta.attributedRevenue ?? (orders > 0 ? `${(orders * priceVal).toFixed(2)}` : "$0.00");
+      const rev = stats.revenue > 0
+        ? `$${stats.revenue.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
+        : meta.attributedRevenue ?? (orders > 0 ? `$${(orders * priceVal).toFixed(2)}` : "$0.00");
 
       const clickRate = recs > 0 ? ((clicks / recs) * 100).toFixed(1) : "0.0";
       const cartRate = clicks > 0 ? ((cart / clicks) * 100).toFixed(1) : "0.0";
@@ -268,13 +297,18 @@ export async function GET(req: NextRequest) {
         businessId: currentBizId,
         role: "user",
       },
-      include: {
+      select: {
+        id: true,
+        content: true,
+        createdAt: true,
         conversation: {
-          include: {
+          select: {
+            metadata: true,
             messages: {
               where: { role: "assistant" },
               take: 1,
               orderBy: { createdAt: "asc" },
+              select: { content: true },
             },
           },
         },

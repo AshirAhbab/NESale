@@ -132,6 +132,8 @@ model Product {
 
   @@unique([businessId, externalId])
   @@index([teamId])
+  @@index([businessId, status])
+  @@index([businessId, productType])
   @@map("products")
 }
 
@@ -297,6 +299,8 @@ model Conversation {
 
   @@map("conversations")
   @@index([teamId])
+  @@index([businessId, startedAt])
+  @@index([businessId, status])
 }
 
 // 13. Messages
@@ -317,6 +321,8 @@ model Message {
 
   @@map("messages")
   @@index([teamId])
+  @@index([conversationId, createdAt])
+  @@index([businessId, createdAt])
 }
 
 // 14. Leads
@@ -339,6 +345,8 @@ model Lead {
 
   @@map("leads")
   @@index([teamId])
+  @@index([businessId, createdAt])
+  @@index([businessId, status])
 }
 
 // 15. Analytics Events
@@ -359,6 +367,9 @@ model AnalyticsEvent {
 
   @@map("analytics_events")
   @@index([teamId])
+  @@index([businessId, createdAt])
+  @@index([businessId, eventType, createdAt])
+  @@index([businessId, entityId])
 }
 
 // 16. Usage Records (Token limits, conversation limits per billing cycle)
@@ -616,6 +627,7 @@ model Appointment {
   staff    Staff?   @relation(fields: [staffId], references: [id], onDelete: SetNull)
 
   @@index([businessId, startAt])
+  @@index([businessId, status, startAt])
   @@index([teamId])
   @@index([serviceId])
   @@index([staffId])
