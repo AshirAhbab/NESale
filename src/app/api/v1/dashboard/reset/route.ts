@@ -1,14 +1,42 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { resolveCachedTenant } from "@/lib/cache/tenantMemo";
 
 export async function POST(req: NextRequest) {
+  // Never allow destructive store reset in production
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json(
+      { error: "Store reset is disabled in production environments." },
+      { status: 403 }
+    );
+  }
+
   try {
-    const biz = await prisma.business.findFirst();
-    if (!biz) {
-      return NextResponse.json({ error: "No business found" }, { status: 404 });
+    const tenant = await resolveCachedTenant(req);
+    if (!tenant?.business?.id) {
+      return NextResponse.json(
+        { error: "Unauthorized: Active merchant session required to reset store." },
+        { status: 401 }
+      );
     }
 
-    const businessId = biz.id;
+    const businessId = tenant.business.id;
+
+    // Verify user is the business owner
+    const membership = await prisma.businessMember.findFirst({
+      where: {
+        businessId,
+        userId: tenant.user?.id,
+        role: "owner",
+      },
+    });
+
+    if (!membership && process.env.NODE_ENV !== "development") {
+      return NextResponse.json(
+        { error: "Forbidden: Only the business owner can reset store data." },
+        { status: 403 }
+      );
+    }
 
     // Delete in relational order to respect foreign keys
     await prisma.analyticsEvent.deleteMany({ where: { businessId } });
@@ -31,13 +59,12 @@ export async function POST(req: NextRequest) {
       data: {
         name: "My Store",
         websiteUrl: "",
-        slug: "my-store",
       },
     });
 
     return NextResponse.json({
       status: "success",
-      message: "Store reset to brand new clean state.",
+      message: "Store data successfully reset.",
       businessId,
     });
   } catch (error: any) {

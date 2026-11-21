@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   CreditCard,
@@ -16,13 +16,83 @@ import {
   RefreshCw,
   Building2,
   Lock,
+  Receipt,
+  AlertCircle,
+  FileText,
 } from "lucide-react";
 import { toast } from "@/components/ui/Toast";
+import { PlanCode } from "@/lib/billing/entitlements";
+
+interface InvoiceItem {
+  id: string;
+  date: string;
+  desc: string;
+  period: string;
+  amount: string;
+  status: string;
+  receiptUrl?: string;
+}
+
+interface BillingUsage {
+  conversations: {
+    used: number;
+    max: number | "unlimited";
+    pct: number;
+  };
+  slots: {
+    used: number;
+    max: number;
+    canAdd: boolean;
+  };
+  websites: {
+    used: number;
+    max: number;
+  };
+}
 
 export default function BillingPage() {
   const [billingCycle, setBillingCycle] = useState<"monthly" | "annual">("monthly");
-  const [selectedPlan, setSelectedPlan] = useState<"free" | "starter" | "growth" | "pro">("growth");
+  const [selectedPlan, setSelectedPlan] = useState<PlanCode>("free");
+  const [subscriptionStatus, setSubscriptionStatus] = useState<string>("active");
   const [isUpgrading, setIsUpgrading] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const [usage, setUsage] = useState<BillingUsage>({
+    conversations: { used: 0, max: 50, pct: 0 },
+    slots: { used: 0, max: 1, canAdd: true },
+    websites: { used: 0, max: 1 },
+  });
+
+  const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
+
+  // Fetch live subscription and usage on mount
+  const fetchSubscriptionData = async () => {
+    setIsLoading(true);
+    try {
+      const res = await fetch("/api/v1/billing/subscription");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.subscription?.planCode) {
+          setSelectedPlan(data.subscription.planCode as PlanCode);
+          setSubscriptionStatus(data.subscription.status || "active");
+        }
+        if (data.usage) {
+          setUsage(data.usage);
+        }
+        if (Array.isArray(data.invoices)) {
+          setInvoices(data.invoices);
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to load subscription data:", err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchSubscriptionData();
+  }, []);
 
   const plans = [
     {
@@ -100,39 +170,37 @@ export default function BillingPage() {
     },
   ];
 
-  const invoices = [
-    {
-      date: "Oct 4, 2026",
-      desc: "Growth Plan — Monthly",
-      period: "Oct 4 – Nov 4, 2026",
-      amount: "$39.00",
-      status: "Paid",
-    },
-    {
-      date: "Sep 4, 2026",
-      desc: "Growth Plan — Monthly",
-      period: "Sep 4 – Oct 4, 2026",
-      amount: "$39.00",
-      status: "Paid",
-    },
-    {
-      date: "Aug 4, 2026",
-      desc: "Starter Plan — Monthly",
-      period: "Aug 4 – Sep 4, 2026",
-      amount: "$19.00",
-      status: "Paid",
-    },
-  ];
+  const handlePlanSelect = async (planId: PlanCode) => {
+    if (planId === selectedPlan) return;
 
-  const handlePlanSelect = (planId: "free" | "starter" | "growth" | "pro") => {
     setIsUpgrading(planId);
-    setTimeout(() => {
-      setSelectedPlan(planId);
+    try {
+      const res = await fetch("/api/v1/billing/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ planCode: planId }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error?.message || "Failed to switch plan.");
+      }
+
+      if (data.url) {
+        if (data.url.startsWith("http") && !data.url.includes(window.location.host)) {
+          // External Stripe Checkout redirect
+          window.location.href = data.url;
+        } else {
+          // Internal redirect / local activation
+          toast.success(`Plan successfully switched to ${planId.toUpperCase()}!`);
+          await fetchSubscriptionData();
+        }
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to process plan checkout.");
+    } finally {
       setIsUpgrading(null);
-      toast.success(
-        `Plan updated to ${planId.toUpperCase()}! Shopify recurring application charge updated.`
-      );
-    }, 800);
+    }
   };
 
   return (
@@ -152,201 +220,109 @@ export default function BillingPage() {
             </h1>
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-              Shopify App Billing Synced
+              {subscriptionStatus === "active" ? "Active Subscription" : subscriptionStatus.toUpperCase()}
             </span>
-            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-800/40">
-              Active Subscription
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-800/40 capitalize">
+              {selectedPlan} Tier
             </span>
           </div>
-          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
-            Manage your NESale recurring plan and real-time usage telemetry.
+        </div>
+      </div>
+
+      {/* Usage Overview Banner */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {/* Metric 1: Monthly Conversations */}
+        <div className="bg-white dark:bg-[#11141d] rounded-2xl p-5 border border-slate-100 dark:border-white/[0.08] shadow-sm space-y-2">
+          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+            Conversations This Cycle
+          </span>
+          <div className="flex items-baseline justify-between pt-1">
+            <span className="text-2xl font-black text-slate-900 dark:text-white">
+              {usage.conversations.used.toLocaleString()}
+            </span>
+            <span className="text-xs font-semibold text-slate-500">
+              / {usage.conversations.max === "unlimited" ? "Unlimited" : usage.conversations.max.toLocaleString()}
+            </span>
+          </div>
+          <div className="w-full h-1.5 rounded-full bg-slate-100 dark:bg-white/[0.08] overflow-hidden mt-2">
+            <div
+              className="h-full bg-indigo-600 rounded-full transition-all duration-500"
+              style={{ width: `${usage.conversations.max === "unlimited" ? 15 : usage.conversations.pct}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Metric 2: Integration Slots */}
+        <div className="bg-white dark:bg-[#11141d] rounded-2xl p-5 border border-slate-100 dark:border-white/[0.08] shadow-sm space-y-2">
+          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+            Active Integrations
+          </span>
+          <div className="flex items-baseline justify-between pt-1">
+            <span className="text-2xl font-black text-slate-900 dark:text-white">
+              {usage.slots.used}
+            </span>
+            <span className="text-xs font-semibold text-slate-500">
+              / {usage.slots.max === 999 ? "Unlimited" : usage.slots.max} Slots
+            </span>
+          </div>
+          <p className="text-[11px] text-slate-400 mt-2">
+            Slack, Discord, HubSpot, Webhooks, Google Calendar
+          </p>
+        </div>
+
+        {/* Metric 3: Connected Websites */}
+        <div className="bg-white dark:bg-[#11141d] rounded-2xl p-5 border border-slate-100 dark:border-white/[0.08] shadow-sm space-y-2">
+          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+            Connected Storefronts
+          </span>
+          <div className="flex items-baseline justify-between pt-1">
+            <span className="text-2xl font-black text-slate-900 dark:text-white">
+              {usage.websites.used}
+            </span>
+            <span className="text-xs font-semibold text-slate-500">
+              / {usage.websites.max === 999 ? "Unlimited" : usage.websites.max} Domains
+            </span>
+          </div>
+          <p className="text-[11px] text-slate-400 mt-2">
+            Multi-domain CORS &amp; chat widget embeds
           </p>
         </div>
       </div>
 
-      {/* Current Active Plan Card */}
-      <div className="bg-white dark:bg-[#11141d] rounded-3xl p-6 sm:p-7 border border-slate-100 dark:border-white/[0.08] shadow-sm space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2.5">
-              <h2 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white capitalize">
-                {selectedPlan} Plan{" "}
-                <span className="text-slate-400 dark:text-slate-500 font-normal">
-                  / {selectedPlan === "pro" ? "$79" : selectedPlan === "starter" ? "$19" : selectedPlan === "free" ? "$0" : "$39"} mo
-                </span>
-              </h2>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40">
-                ● ACTIVE
-              </span>
-            </div>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              For stores scaling real-time conversational sales &amp; automated checkout.
-            </p>
-            <div className="text-xs text-slate-400 dark:text-slate-500 mt-1 flex items-center gap-1.5">
-              <span>🕒 Next billing cycle:</span>
-              <strong className="text-slate-700 dark:text-slate-300">November 4, 2026</strong>
-              <span>(Billed via Shopify App Subscription)</span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => toast.info("Shopify App Subscription management portal opened.")}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-[#171b26] hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-700 dark:text-slate-200 text-xs font-semibold transition active:scale-[0.99] cursor-pointer min-h-[44px]"
-            >
-              <span>Manage subscription</span>
-            </button>
-            <a
-              href="https://admin.shopify.com"
-              target="_blank"
-              rel="noreferrer"
-              className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 min-h-[44px]"
-            >
-              <span>Update payment method</span>
-              <ExternalLink className="w-3 h-3" />
-            </a>
-          </div>
+      {/* Plans Section */}
+      <div className="bg-white dark:bg-[#11141d] rounded-3xl p-6 sm:p-8 border border-slate-100 dark:border-white/[0.08] shadow-sm space-y-6">
+        <div>
+          <h3 className="text-base font-bold text-slate-900 dark:text-white">Subscription plans</h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            Select the plan that best fits your business conversation volume and integration requirements.
+          </p>
         </div>
 
-        {/* 3 Telemetry Usage Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
-          {/* Card 1: AI Conversations */}
-          <div className="p-4 rounded-2xl bg-slate-50/70 dark:bg-[#171b26] border border-slate-100 dark:border-white/[0.08] space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-bold text-slate-500 dark:text-slate-400 text-[11px]">AI Conversations</span>
-              <span className="text-[10px] text-slate-400 dark:text-slate-500 font-medium">Resets in 11d</span>
-            </div>
-            <div className="text-2xl font-black text-slate-900 dark:text-white">
-              2,847 <span className="text-xs text-slate-400 dark:text-slate-500 font-normal">/ 5,000</span>
-            </div>
-            <div className="w-full h-2 bg-slate-200 dark:bg-white/[0.1] rounded-full overflow-hidden">
-              <div className="w-[57%] h-full bg-indigo-600 rounded-full"></div>
-            </div>
-            <div className="flex items-center justify-between text-[11px] text-slate-400 dark:text-slate-500">
-              <span>57% quota utilized</span>
-              <span className="font-semibold text-slate-700 dark:text-slate-300">2,153 left</span>
-            </div>
-          </div>
-
-          {/* Card 2: AI-Attributed Revenue */}
-          <div className="p-4 rounded-2xl bg-slate-50/70 dark:bg-[#171b26] border border-slate-100 dark:border-white/[0.08] space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-bold text-slate-500 dark:text-slate-400 text-[11px]">AI-Attributed Revenue</span>
-              <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded">
-                📈 +24.8%
-              </span>
-            </div>
-            <div className="text-2xl font-black text-slate-900 dark:text-white">
-              $18,420 <span className="text-xs text-slate-400 dark:text-slate-500 font-normal">this cycle</span>
-            </div>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">
-              <strong>384 purchases</strong> generated autonomously via conversational assistant.
-            </p>
-          </div>
-
-          {/* Card 3: Products Synced */}
-          <div className="p-4 rounded-2xl bg-slate-50/70 dark:bg-[#171b26] border border-slate-100 dark:border-white/[0.08] space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-bold text-slate-500 dark:text-slate-400 text-[11px]">Products Synced</span>
-              <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-0.5">
-                <Check className="w-3 h-3" />
-              </span>
-            </div>
-            <div className="text-2xl font-black text-slate-900 dark:text-white">
-              1,284 <span className="text-xs text-slate-400 dark:text-slate-500 font-normal">/ 5,000</span>
-            </div>
-            <div className="w-full h-2 bg-slate-200 dark:bg-white/[0.1] rounded-full overflow-hidden">
-              <div className="w-[26%] h-full bg-emerald-500 rounded-full"></div>
-            </div>
-            <div className="flex items-center justify-between text-[11px] text-slate-400 dark:text-slate-500">
-              <span>26% catalog quota</span>
-              <span className="text-slate-600 dark:text-slate-300 font-medium">Synced 4m ago</span>
-            </div>
-          </div>
-        </div>
-
-        {/* ROI Callout Banner */}
-        <div className="p-4 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-800/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-indigo-950 dark:text-indigo-200">
-          <div className="flex items-center gap-2.5">
-            <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
-            <span>
-              Your <strong>{selectedPlan} plan</strong> has unlocked <strong>472× ROI</strong> based on{" "}
-              <strong>$18,420</strong> in direct attributed revenue this billing cycle.
-            </span>
-          </div>
-          <Link
-            href="/dashboard/analytics"
-            className="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 flex items-center gap-1 shrink-0"
-          >
-            <span>View conversion analytics</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </Link>
-        </div>
-      </div>
-
-      {/* Choose your plan Section */}
-      <div className="space-y-5 pt-2">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <h3 className="text-lg font-bold text-slate-900 dark:text-white">Choose your plan</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Scale your conversational AI as your store grows. Upgrade or downgrade instantly.
-            </p>
-          </div>
-
-          <div className="flex items-center bg-slate-100 dark:bg-[#171b26] p-1 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-400 self-start sm:self-center border border-slate-200 dark:border-white/[0.08]">
-            <button
-              type="button"
-              onClick={() => setBillingCycle("monthly")}
-              className={`px-3 py-1.5 rounded-lg transition cursor-pointer min-h-[36px] ${
-                billingCycle === "monthly"
-                  ? "bg-white dark:bg-[#11141d] text-slate-900 dark:text-white shadow-2xs font-bold"
-                  : "hover:text-slate-900 dark:hover:text-white"
-              }`}
-            >
-              Monthly
-            </button>
-            <button
-              type="button"
-              onClick={() => setBillingCycle("annual")}
-              className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 min-h-[36px] ${
-                billingCycle === "annual"
-                  ? "bg-white dark:bg-[#11141d] text-slate-900 dark:text-white shadow-2xs font-bold"
-                  : "hover:text-slate-900 dark:hover:text-white"
-              }`}
-            >
-              <span>Annual</span>
-              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300">
-                Save 20%
-              </span>
-            </button>
-          </div>
-        </div>
-
-        {/* 4 Plan Cards */}
+        {/* Grid of 4 Plans */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {plans.map((p) => {
             const price = billingCycle === "monthly" ? p.priceMonthly : p.priceAnnual;
+
             return (
               <div
                 key={p.id}
-                className={`rounded-3xl p-6 border transition flex flex-col justify-between relative ${
-                  p.isPopular
-                    ? "border-indigo-600 bg-white dark:bg-[#11141d] ring-2 ring-indigo-600/10 shadow-lg"
-                    : "border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#11141d] shadow-2xs hover:shadow-sm"
+                className={`rounded-2xl p-5 border transition flex flex-col justify-between relative ${
+                  p.isCurrent
+                    ? "border-indigo-600 dark:border-indigo-500 bg-indigo-50/20 dark:bg-indigo-950/20 ring-2 ring-indigo-600/20"
+                    : p.isPopular
+                    ? "border-indigo-300 dark:border-indigo-800 bg-white dark:bg-[#171b26]"
+                    : "border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#171b26]"
                 }`}
               >
-                {/* Popular & Your Plan Badges */}
-                <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center justify-between gap-2 mb-3">
                   {p.isPopular && (
-                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-600 text-white uppercase tracking-wider">
-                      Most popular
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-600 text-white">
+                      Popular
                     </span>
                   )}
                   {p.isCurrent && (
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-800/40 ml-auto">
-                      Your plan
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40 ml-auto">
+                      Current Plan
                     </span>
                   )}
                 </div>
@@ -362,7 +338,9 @@ export default function BillingPage() {
                       <span className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">
                         {price}
                       </span>
-                      <span className="text-xs text-slate-400 dark:text-slate-500">/mo</span>
+                      {price !== "Pay As You Go" && (
+                        <span className="text-xs text-slate-400 dark:text-slate-500">/mo</span>
+                      )}
                     </div>
                     <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 block">{p.note}</span>
                   </div>
@@ -386,14 +364,14 @@ export default function BillingPage() {
                     onClick={() => handlePlanSelect(p.id)}
                     className={`w-full py-2.5 rounded-xl text-xs font-bold transition active:scale-[0.99] cursor-pointer flex items-center justify-center gap-1.5 min-h-[44px] ${
                       p.isCurrent
-                        ? "bg-indigo-600 text-white cursor-default"
+                        ? "bg-indigo-600 text-white cursor-default opacity-90"
                         : p.isPopular
                         ? "bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs"
-                        : "bg-slate-100 dark:bg-[#171b26] hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-700 dark:text-slate-200"
+                        : "bg-slate-100 dark:bg-[#1f2433] hover:bg-slate-200 dark:hover:bg-white/[0.08] text-slate-700 dark:text-slate-200"
                     }`}
                   >
                     {isUpgrading === p.id && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                    <span>{p.isCurrent ? "✓ Current plan" : p.buttonText}</span>
+                    <span>{p.isCurrent ? "✓ Current Plan" : p.buttonText}</span>
                   </button>
                 </div>
               </div>
@@ -402,61 +380,80 @@ export default function BillingPage() {
         </div>
 
         <p className="text-center text-[11px] text-slate-400 dark:text-slate-500 pt-1">
-          🔒 Plans can be changed or cancelled at any time. Prorated charges are handled seamlessly through your Shopify billing account.
+          🔒 Encrypted checkout. Subscriptions can be upgraded, downgraded, or cancelled at any time without long-term contracts.
         </p>
       </div>
 
-      {/* Usage & Billing History */}
+      {/* Invoices & Billing Receipts (Zero Fake Invoices) */}
       <div className="bg-white dark:bg-[#11141d] rounded-3xl p-6 sm:p-7 border border-slate-100 dark:border-white/[0.08] shadow-sm space-y-4">
         <div>
-          <h3 className="text-sm font-bold text-slate-900 dark:text-white">Usage &amp; billing history</h3>
+          <h3 className="text-sm font-bold text-slate-900 dark:text-white">Billing History &amp; Receipts</h3>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Invoices processed automatically through Shopify App Billing.
+            Verified invoices and downloadable receipts for your account.
           </p>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[600px] text-left text-xs">
-            <thead>
-              <tr className="border-b border-slate-100 dark:border-white/[0.08] text-slate-400 dark:text-slate-500 font-semibold text-[11px] bg-slate-50/40 dark:bg-[#171b26]">
-                <th className="py-3 px-4 font-semibold">DATE</th>
-                <th className="py-3 px-4 font-semibold">DESCRIPTION</th>
-                <th className="py-3 px-4 font-semibold">PERIOD</th>
-                <th className="py-3 px-4 font-semibold">AMOUNT</th>
-                <th className="py-3 px-4 font-semibold">STATUS</th>
-                <th className="py-3 px-4 font-semibold text-right">RECEIPT</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
-              {invoices.map((inv, idx) => (
-                <tr key={idx} className="hover:bg-slate-50/60 dark:hover:bg-white/[0.03] transition">
-                  <td className="py-3.5 px-4 font-medium text-slate-900 dark:text-white">{inv.date}</td>
-                  <td className="py-3.5 px-4 font-semibold text-slate-700 dark:text-slate-300">{inv.desc}</td>
-                  <td className="py-3.5 px-4 text-slate-400 dark:text-slate-500 text-[11px]">{inv.period}</td>
-                  <td className="py-3.5 px-4 font-bold text-slate-900 dark:text-white">{inv.amount}</td>
-                  <td className="py-3.5 px-4">
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40">
-                      ● {inv.status}
-                    </span>
-                  </td>
-                  <td className="py-3.5 px-4 text-right">
-                    <button
-                      type="button"
-                      onClick={() => toast.success(`Downloading PDF receipt for ${inv.date}`)}
-                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 transition cursor-pointer min-h-[44px]"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>Download PDF</span>
-                    </button>
-                  </td>
+        {invoices.length === 0 ? (
+          <div className="p-8 rounded-2xl bg-slate-50/60 dark:bg-[#171b26]/50 border border-dashed border-slate-200 dark:border-white/[0.08] flex flex-col items-center justify-center text-center space-y-2">
+            <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-white/[0.06] text-slate-400 flex items-center justify-center">
+              <Receipt className="w-5 h-5" />
+            </div>
+            <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300">
+              No Billing Invoices On File
+            </h4>
+            <p className="text-[11px] text-slate-400 max-w-sm">
+              Your store is currently operating under the {selectedPlan.toUpperCase()} tier. When a paid plan subscription processes, your PDF receipts will be listed here.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[600px] text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-100 dark:border-white/[0.08] text-slate-400 dark:text-slate-500 font-semibold text-[11px] bg-slate-50/40 dark:bg-[#171b26]">
+                  <th className="py-3 px-4 font-semibold">DATE</th>
+                  <th className="py-3 px-4 font-semibold">DESCRIPTION</th>
+                  <th className="py-3 px-4 font-semibold">PERIOD</th>
+                  <th className="py-3 px-4 font-semibold">AMOUNT</th>
+                  <th className="py-3 px-4 font-semibold">STATUS</th>
+                  <th className="py-3 px-4 font-semibold text-right">RECEIPT</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
+                {invoices.map((inv) => (
+                  <tr key={inv.id} className="hover:bg-slate-50/60 dark:hover:bg-white/[0.03] transition">
+                    <td className="py-3.5 px-4 font-medium text-slate-900 dark:text-white">{inv.date}</td>
+                    <td className="py-3.5 px-4 font-semibold text-slate-700 dark:text-slate-300">{inv.desc}</td>
+                    <td className="py-3.5 px-4 text-slate-400 dark:text-slate-500 text-[11px]">{inv.period}</td>
+                    <td className="py-3.5 px-4 font-bold text-slate-900 dark:text-white">{inv.amount}</td>
+                    <td className="py-3.5 px-4">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40">
+                        ● {inv.status}
+                      </span>
+                    </td>
+                    <td className="py-3.5 px-4 text-right">
+                      {inv.receiptUrl ? (
+                        <a
+                          href={inv.receiptUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 transition"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>PDF</span>
+                        </a>
+                      ) : (
+                        <span className="text-slate-400 text-[11px]">N/A</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
-      {/* Enterprise SLA Banner */}
+      {/* Enterprise Volume Banner */}
       <div className="p-5 rounded-3xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-800/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs">
         <div className="flex items-center gap-3.5">
           <div className="w-10 h-10 rounded-2xl bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 flex items-center justify-center shrink-0">

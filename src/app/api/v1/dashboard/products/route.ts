@@ -9,7 +9,7 @@ export async function GET(req: NextRequest) {
     const businessId = searchParams.get("businessId");
     const teamId = searchParams.get("teamId");
 
-    const tenant = await resolveCachedTenant(businessId);
+    const tenant = await resolveCachedTenant(req, businessId);
     if (!tenant || !tenant.business) {
       return NextResponse.json({ error: { message: "No business found." } }, { status: 404 });
     }
@@ -30,33 +30,28 @@ export async function GET(req: NextRequest) {
             },
             orderBy: { createdAt: "desc" },
           }),
-      prisma.analyticsEvent.findMany({
-        where: { businessId: currentBizId },
-        select: { entityId: true, eventType: true },
-      }),
-    ]);
+          prisma.analyticsEvent.findMany({
+            where: { businessId: currentBizId },
+            select: { entityId: true, eventType: true, valueNumeric: true },
+          }),
+        ]);
 
-    const formatted = products.map((p, idx) => {
-      const meta = (p.metadata as Record<string, any>) || {};
-      const priceNum = p.priceMin ? Number(p.priceMin) : 0;
+        const formatted = products.map((p) => {
+          const meta = (p.metadata as Record<string, any>) || {};
+          const priceNum = p.priceMin ? Number(p.priceMin) : 0;
 
-      // Calculate live telemetry from analytics events for this specific product
-      const pClicks =
-        events.filter((e) => e.entityId === p.id && (e.eventType === "product_click" || e.eventType === "product_view")).length ||
-        meta.clicks ||
-        Math.max(14, 120 - idx * 18);
+          // Real, honest product event counts
+          const pClicks = events.filter((e) => e.entityId === p.id && (e.eventType === "product_click" || e.eventType === "product_view")).length;
+          const pRecs = events.filter((e) => e.entityId === p.id && e.eventType === "product_recommendation").length;
+          const pCart = events.filter((e) => e.entityId === p.id && e.eventType === "add_to_cart").length;
+          const orderEvents = events.filter((e) => e.entityId === p.id && (e.eventType === "purchase" || e.eventType === "order_completed"));
+          const pOrders = orderEvents.length;
+          const pRevenueNum = orderEvents.reduce((acc, e) => acc + (e.valueNumeric ? Number(e.valueNumeric) : priceNum), 0);
+          const pRev = `$${pRevenueNum.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 
-      const pRecs = meta.aiRecs || Math.round(pClicks * 3.1);
-      const pCart =
-        events.filter((e) => e.entityId === p.id && e.eventType === "add_to_cart").length ||
-        meta.addToCart ||
-        Math.max(4, Math.round(pClicks * 0.32));
-
-      const pOrders = meta.orders || Math.max(2, Math.round(pCart * 0.68));
-      const pRev = meta.attributedRevenue || `$${((priceNum || 79) * pOrders).toLocaleString()}`;
-
-      const ctrStr = pRecs > 0 ? `${((pClicks / pRecs) * 100).toFixed(1)}%` : "28.5%";
-      const cvrStr = pClicks > 0 ? `${((pCart / pClicks) * 100).toFixed(1)}%` : "31.2%";
+          const ctrStr = pRecs > 0 ? `${((pClicks / pRecs) * 100).toFixed(1)}%` : "0.0%";
+          const cvrStr = pClicks > 0 ? `${((pCart / pClicks) * 100).toFixed(1)}%` : "0.0%";
+          const growthStr = pRecs > 0 ? "Tracked" : "No recommendations yet";
 
       // Dynamic Knowledge Vectors based on real product properties
       const dynamicVectors = [
@@ -86,12 +81,12 @@ export async function GET(req: NextRequest) {
         sku: meta.sku || `SKU-${p.id.slice(0, 6).toUpperCase()}`,
         category: p.productType || meta.category || "General",
         price: priceNum,
-        stock: meta.stock !== undefined ? Number(meta.stock) : (meta.stock === 0 ? 0 : 45),
+        stock: meta.stock !== undefined ? Number(meta.stock) : (p.status === "active" ? 1 : 0),
         status: p.status === "active" ? (meta.stock !== undefined && meta.stock <= 5 && meta.stock > 0 ? "low_stock" : "in_stock") : "out_of_stock",
         source: meta.source || (p.externalId ? "shopify" : "crawled"),
         imageUrl: p.imageUrl,
         aiRecs: pRecs,
-        aiRecsGrowth: "+14% wk",
+        aiRecsGrowth: growthStr,
         clicks: pClicks,
         ctr: ctrStr,
         addToCart: pCart,
@@ -146,7 +141,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const tenant = await resolveCachedTenant(businessId);
+    const tenant = await resolveCachedTenant(req, businessId);
     if (!tenant || !tenant.business) {
       return NextResponse.json({ error: { message: "No business found." } }, { status: 400 });
     }
@@ -228,7 +223,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: { message: "Product ID required" } }, { status: 400 });
     }
 
-    const tenant = await resolveCachedTenant(businessId);
+    const tenant = await resolveCachedTenant(req, businessId);
     if (!tenant || !tenant.business) {
       return NextResponse.json({ error: { message: "No business found." } }, { status: 400 });
     }
@@ -337,7 +332,7 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: { message: "Product ID required" } }, { status: 400 });
     }
 
-    const tenant = await resolveCachedTenant(businessId);
+    const tenant = await resolveCachedTenant(req, businessId);
     if (!tenant || !tenant.business) {
       return NextResponse.json({ error: { message: "No business found." } }, { status: 400 });
     }

@@ -1,15 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { resolveCachedTenant } from "@/lib/cache/tenantMemo";
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const businessId = searchParams.get("businessId");
+    const businessId = searchParams.get("businessId") || undefined;
 
-    const whereBiz = businessId ? { businessId } : {};
+    const tenant = await resolveCachedTenant(req, businessId);
+    if (!tenant?.business?.id) {
+      return NextResponse.json(
+        { error: { message: "Unauthorized: Active merchant session required to access conversations." } },
+        { status: 401 }
+      );
+    }
+
+    const currentBizId = tenant.business.id;
 
     const dbConversations = await prisma.conversation.findMany({
-      where: whereBiz,
+      where: { businessId: currentBizId },
       include: {
         messages: {
           orderBy: { createdAt: "asc" },

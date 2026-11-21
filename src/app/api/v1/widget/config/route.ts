@@ -1,25 +1,50 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { ensureSeedData } from "@/lib/db/seed";
+import { resolveCachedTenant } from "@/lib/cache/tenantMemo";
+import { validateWidgetOrigin } from "@/lib/security/originCheck";
+
+export async function OPTIONS(req: NextRequest) {
+  const cors = validateWidgetOrigin(req);
+  return new NextResponse(null, { status: 204, headers: cors.headers });
+}
 
 export async function GET(req: NextRequest) {
+  const baseCors = validateWidgetOrigin(req);
   try {
     const { searchParams } = new URL(req.url);
     const businessId = searchParams.get("businessId");
 
+    if (!businessId && process.env.NODE_ENV === "production") {
+      return NextResponse.json(
+        { error: { message: "A valid 'businessId' parameter is required." } },
+        { status: 400, headers: baseCors.headers }
+      );
+    }
+
     let business = businessId
       ? await prisma.business.findUnique({ where: { id: businessId } })
-      : await prisma.business.findFirst();
+      : process.env.NODE_ENV !== "production"
+      ? await prisma.business.findFirst()
+      : null;
 
-    if (!business) {
+    if (!business && process.env.NODE_ENV !== "production") {
       await ensureSeedData();
       business = await prisma.business.findFirst();
     }
 
     if (!business) {
       return NextResponse.json(
-        { error: { message: "No business found." } },
-        { status: 404 }
+        { error: { message: "Store or business not found." } },
+        { status: 404, headers: baseCors.headers }
+      );
+    }
+
+    const cors = validateWidgetOrigin(req, business.websiteUrl);
+    if (!cors.allowed && process.env.NODE_ENV === "production") {
+      return NextResponse.json(
+        { error: { message: `Cross-origin embedding is not authorized for origin '${cors.origin}'.` } },
+        { status: 403, headers: cors.headers }
       );
     }
 
@@ -59,6 +84,7 @@ export async function GET(req: NextRequest) {
       },
       {
         headers: {
+          ...cors.headers,
           "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
         },
       }
@@ -85,21 +111,15 @@ export async function POST(req: NextRequest) {
       showBranding,
     } = body;
 
-    let business = businessId
-      ? await prisma.business.findUnique({ where: { id: businessId } })
-      : await prisma.business.findFirst();
-
-    if (!business) {
-      await ensureSeedData();
-      business = await prisma.business.findFirst();
-    }
-
-    if (!business) {
+    const tenant = await resolveCachedTenant(req, businessId);
+    if (!tenant?.business?.id) {
       return NextResponse.json(
-        { error: { message: "No business found to update config." } },
-        { status: 404 }
+        { error: { message: "Unauthorized: Active merchant session required to update widget configuration." } },
+        { status: 401 }
       );
     }
+
+    const business = tenant.business;
 
     const updated = await prisma.widgetConfig.upsert({
       where: { businessId: business.id },

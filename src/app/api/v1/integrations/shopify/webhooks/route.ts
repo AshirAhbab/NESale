@@ -30,24 +30,19 @@ export async function POST(req: NextRequest) {
       payload = { raw: rawBody };
     }
 
-    // Resolve tenant business
-    let business = await prisma.business.findFirst({
+    // Resolve tenant business by website URL or configured integration
+    const business = await prisma.business.findFirst({
       where: {
         OR: [
           { websiteUrl: { contains: shopDomain } },
-          { slug: "nordik-gear" },
+          { integrations: { some: { provider: "shopify", status: "active" } } },
         ],
       },
     });
 
     if (!business) {
-      await ensureSeedData();
-      business = await prisma.business.findFirst();
-    }
-
-    if (!business) {
       return NextResponse.json(
-        { error: { message: "No business found to attach webhook event." } },
+        { error: { message: `No registered business associated with shop domain '${shopDomain}'.` } },
         { status: 404 }
       );
     }

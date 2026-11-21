@@ -31,11 +31,18 @@ export async function POST(req: NextRequest) {
 
     // Attempt to persist as a platform lead in Prisma if a business exists
     try {
-      const defaultBiz = await prisma.business.findFirst();
-      if (defaultBiz) {
+      const platformBiz = await prisma.business.findFirst({
+        where: {
+          OR: [
+            { slug: "ne-sale" },
+            { slug: "platform" },
+          ],
+        },
+      });
+      if (platformBiz) {
         await prisma.lead.create({
           data: {
-            businessId: defaultBiz.id,
+            businessId: platformBiz.id,
             name: fullName.trim(),
             email: email.trim().toLowerCase(),
             status: "new",

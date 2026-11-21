@@ -1,7 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 
+const CRON_SECRET = process.env.CRON_SECRET || process.env.ADMIN_SECRET_KEY || "";
+
+function isAuthorized(req: NextRequest): boolean {
+  if (!CRON_SECRET) {
+    return process.env.NODE_ENV !== "production";
+  }
+  const secret = req.headers.get("x-system-secret") || req.headers.get("x-cron-secret");
+  return secret === CRON_SECRET;
+}
+
 export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return NextResponse.json({ error: "Unauthorized: Missing system credentials." }, { status: 401 });
+  }
+
   try {
     const status: Array<{ tablename: string; rowsecurity: boolean }> = await prisma.$queryRawUnsafe(`
       SELECT tablename, rowsecurity 
@@ -16,6 +30,10 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return NextResponse.json({ error: "Unauthorized: Missing system credentials." }, { status: 401 });
+  }
+
   try {
     // 1. Get all base tables in the public schema
     const tables: Array<{ table_name: string }> = await prisma.$queryRawUnsafe(`

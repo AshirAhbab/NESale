@@ -1,9 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ShopifyProvider } from "@/lib/integrations/shopify";
+import { resolveCachedTenant } from "@/lib/cache/tenantMemo";
 import crypto from "crypto";
 
 export async function POST(req: NextRequest) {
   try {
+    const tenant = await resolveCachedTenant(req);
+    if (!tenant?.business?.id) {
+      return NextResponse.json(
+        { error: { message: "Unauthorized: Active merchant session required to connect Shopify." } },
+        { status: 401 }
+      );
+    }
+
     const body = await req.json();
     const { shop } = body;
 

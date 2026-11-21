@@ -34,78 +34,79 @@ export async function POST(req: NextRequest) {
 
     let currentBiz: any = null;
 
-    // 1. Resolve current business via Supabase session
-    try {
-      const supabase = await createClient();
-      const {
-        data: { user: authUser },
-      } = await supabase.auth.getUser();
+    // 1. Resolve authenticated user via Supabase session
+    const supabase = await createClient();
+    const {
+      data: { user: authUser },
+    } = await supabase.auth.getUser();
 
-      if (authUser?.email) {
-        const dbUser = await prisma.user.findFirst({
-          where: { email: authUser.email.toLowerCase() },
-          include: {
-            memberships: {
-              include: { business: true },
-              take: 1,
+    if (!authUser?.email) {
+      return NextResponse.json(
+        { error: { message: "Authentication required to complete business onboarding." } },
+        { status: 401 }
+      );
+    }
+
+    let dbUser = await prisma.user.findFirst({
+      where: { email: authUser.email.toLowerCase() },
+      include: {
+        memberships: {
+          include: { business: true },
+        },
+      },
+    });
+
+    if (!dbUser) {
+      dbUser = await prisma.user.create({
+        data: {
+          email: authUser.email.toLowerCase(),
+          name: authUser.user_metadata?.full_name || authUser.email.split("@")[0],
+        },
+        include: {
+          memberships: {
+            include: { business: true },
+          },
+        },
+      });
+    }
+
+    // 2. Check if user already owns or belongs to the specified business or any business
+    if (businessId && businessId !== "biz_live") {
+      const matched = dbUser.memberships?.find((m) => m.businessId === businessId);
+      if (matched?.business) {
+        currentBiz = matched.business;
+      }
+    }
+
+    if (!currentBiz && dbUser.memberships && dbUser.memberships.length > 0) {
+      currentBiz = dbUser.memberships[0].business;
+    }
+
+    // 3. If user has no business, create a dedicated new Business tenant for this merchant
+    if (!currentBiz) {
+      const storeName = businessName || "My Store";
+      const baseSlug = storeName
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "-")
+        .replace(/-+/g, "-");
+      const uniqueSlug = `${baseSlug}-${Math.random().toString(36).substring(2, 7)}`;
+
+      currentBiz = await prisma.business.create({
+        data: {
+          name: storeName,
+          slug: uniqueSlug,
+          businessType: normalizedType,
+          businessSubtype: normalizedSubtype,
+          websiteUrl: storeUrl || "https://example.com",
+          description: "Autonomous AI sales-assisted storefront",
+          members: {
+            create: {
+              userId: dbUser.id,
+              role: "owner",
             },
           },
-        });
-
-        if (dbUser?.memberships?.[0]?.business) {
-          currentBiz = dbUser.memberships[0].business;
-        } else if (dbUser) {
-          // User exists but has no business registered yet - create dedicated tenant
-          const storeName = businessName || "My Store";
-          const baseSlug = storeName
-            .toLowerCase()
-            .replace(/[^a-z0-9]/g, "-")
-            .replace(/-+/g, "-");
-          const uniqueSlug = `${baseSlug}-${Math.random().toString(36).substring(2, 7)}`;
-
-          currentBiz = await prisma.business.create({
-            data: {
-              name: storeName,
-              slug: uniqueSlug,
-              businessType: normalizedType,
-              businessSubtype: normalizedSubtype,
-              websiteUrl: storeUrl || "https://example.com",
-              description: "Autonomous AI sales-assisted storefront",
-              members: {
-                create: {
-                  userId: dbUser.id,
-                  role: "owner",
-                },
-              },
-            },
-          });
-        }
-      }
-    } catch (authErr) {
-      console.warn("[Onboarding Complete API] Supabase auth check notice:", authErr);
-    }
-
-    // 2. If not found via auth, try requested businessId
-    if (!currentBiz && businessId && businessId !== "biz_live") {
-      currentBiz = await prisma.business.findUnique({
-        where: { id: businessId },
+        },
       });
-    }
-
-    // 3. Fallback to existing or ensure seed data
-    if (!currentBiz) {
-      currentBiz = await prisma.business.findFirst({
-        orderBy: { createdAt: "desc" },
-      });
-    }
-
-    if (!currentBiz) {
-      await ensureSeedData();
-      currentBiz = await prisma.business.findFirst();
-    }
-
-    if (!currentBiz) {
-      return NextResponse.json({ error: { message: "No business found." } }, { status: 404 });
     }
 
     const currentBizId = currentBiz.id;

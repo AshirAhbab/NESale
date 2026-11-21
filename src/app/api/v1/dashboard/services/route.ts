@@ -20,34 +20,7 @@ export async function GET(req: NextRequest) {
       orderBy: { createdAt: "desc" },
     });
 
-    if (services.length === 0) {
-      // Auto-seed initial sample services tailored to this business
-      const defaultServices = await prisma.$transaction([
-        prisma.service.create({
-          data: {
-            businessId: currentBizId,
-            name: `${currentBiz.name} Priority Consultation`,
-            category: "Consultation",
-            priceMin: 0.0,
-            durationMinutes: 30,
-            bookingUrl: `https://cal.com/${currentBiz.slug}/consultation`,
-            status: "active",
-          },
-        }),
-        prisma.service.create({
-          data: {
-            businessId: currentBizId,
-            name: `${currentBiz.name} Technical Setup & Support`,
-            category: "Maintenance",
-            priceMin: 65.0,
-            durationMinutes: 60,
-            bookingUrl: `https://cal.com/${currentBiz.slug}/setup`,
-            status: "active",
-          },
-        }),
-      ]);
-      services = defaultServices;
-    }
+
 
     return NextResponse.json({
       status: "success",

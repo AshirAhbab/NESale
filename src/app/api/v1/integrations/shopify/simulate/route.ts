@@ -1,9 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
+import { resolveCachedTenant } from "@/lib/cache/tenantMemo";
 
 export async function POST(req: NextRequest) {
+  // Simulator is strictly forbidden in production environments
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json(
+      { error: { message: "Webhook simulator is disabled in production." } },
+      { status: 403 }
+    );
+  }
+
   try {
     const body = await req.json();
     const { type = "order", businessId } = body;
+
+    const tenant = await resolveCachedTenant(req, businessId);
+    if (!tenant?.business?.id) {
+      return NextResponse.json(
+        { error: { message: "Unauthorized: Active merchant session required for simulation." } },
+        { status: 401 }
+      );
+    }
 
     const host = req.headers.get("host") || "localhost:3000";
     const protocol = req.headers.get("x-forwarded-proto") || "http";

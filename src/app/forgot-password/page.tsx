@@ -33,7 +33,7 @@ export default function ForgotPasswordPage() {
     try {
       const redirectUrl =
         typeof window !== "undefined"
-          ? `${window.location.origin}/auth/callback?next=/dashboard/settings`
+          ? `${window.location.origin}/auth/callback?next=/reset-password`
           : undefined;
 
       const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {

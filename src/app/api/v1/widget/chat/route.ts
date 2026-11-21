@@ -80,7 +80,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1. Resolve business
+    // 1. Resolve business with strict tenant verification
+    if (!businessIdParam && process.env.NODE_ENV === "production") {
+      return NextResponse.json(
+        {
+          error: {
+            code: "MISSING_BUSINESS_ID",
+            message: "A valid 'businessId' or 'slug' is required to connect to the assistant.",
+            requestId,
+          },
+        },
+        { status: 400, headers: cors.headers }
+      );
+    }
+
     let business = businessIdParam
       ? await prisma.business.findFirst({
           where: {
@@ -91,14 +104,44 @@ export async function POST(req: NextRequest) {
           },
           include: { businessSettings: true },
         })
-      : await prisma.business.findFirst({ include: { businessSettings: true } });
+      : process.env.NODE_ENV !== "production"
+      ? await prisma.business.findFirst({ include: { businessSettings: true } })
+      : null;
 
-    if (!business) {
+    if (!business && process.env.NODE_ENV !== "production") {
       await ensureSeedData();
       business = await prisma.business.findFirst({ include: { businessSettings: true } });
     }
 
-    const currentBizId = business?.id || "biz_default";
+    if (!business) {
+      return NextResponse.json(
+        {
+          error: {
+            code: "BUSINESS_NOT_FOUND",
+            message: "Store or business not found.",
+            requestId,
+          },
+        },
+        { status: 404, headers: cors.headers }
+      );
+    }
+
+    // Origin authorization check against merchant website
+    const originCheck = validateWidgetOrigin(req, business.websiteUrl);
+    if (!originCheck.allowed && process.env.NODE_ENV === "production") {
+      return NextResponse.json(
+        {
+          error: {
+            code: "ORIGIN_NOT_ALLOWED",
+            message: `Cross-origin embedding is not authorized for '${originCheck.origin}'.`,
+            requestId,
+          },
+        },
+        { status: 403, headers: originCheck.headers }
+      );
+    }
+
+    const currentBizId = business.id;
 
     // 2. Fetch catalog & knowledge from database
     const [catalog, knowledge] = await Promise.all([

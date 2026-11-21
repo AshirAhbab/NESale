@@ -184,8 +184,8 @@ export async function GET(req: NextRequest) {
       const sliceRev = sliceOrders.reduce((sum, o) => sum + (Number(o.valueNumeric) || 0), 0);
       const sliceOrdersCount = sliceOrders.length;
       const sliceCartCount = sliceCart.length;
-      const sliceClicksCount = Math.max(sliceClicks.length, Math.round(sliceCartCount * 2.3), sliceOrdersCount * 4);
-      const sliceConvosCount = Math.max(sliceConvos.length, Math.round(sliceClicksCount * 1.7), sliceOrdersCount * 6);
+      const sliceClicksCount = sliceClicks.length;
+      const sliceConvosCount = sliceConvos.length;
 
       if (sliceRev > peakDayRevenue) {
         peakDayRevenue = sliceRev;
@@ -239,11 +239,11 @@ export async function GET(req: NextRequest) {
         (e) => e.entityId === p.id || (e.metadata as any)?.productId === p.id
       ).length;
 
-      const recs = meta.aiRecs ?? Math.max(pClicks * 2 + 10, Math.round(totalConversations * 0.35 / (idx + 1)));
-      const clicks = meta.clicks ?? Math.max(pClicks, Math.round(recs * 0.42));
-      const cart = meta.addToCart ?? Math.max(pCarts, Math.round(clicks * 0.32));
-      const orders = meta.orders ?? Math.max(pOrders, Math.round(cart * 0.5));
-      const rev = meta.attributedRevenue ?? `$${(orders * priceVal).toLocaleString()}`;
+      const recs = meta.aiRecs ?? (pClicks > 0 ? Math.round(pClicks * 2.5) : 0);
+      const clicks = meta.clicks ?? pClicks;
+      const cart = meta.addToCart ?? pCarts;
+      const orders = meta.orders ?? pOrders;
+      const rev = meta.attributedRevenue ?? (orders > 0 ? `${(orders * priceVal).toFixed(2)}` : "$0.00");
 
       const clickRate = recs > 0 ? ((clicks / recs) * 100).toFixed(1) : "0.0";
       const cartRate = clicks > 0 ? ((cart / clicks) * 100).toFixed(1) : "0.0";
@@ -364,34 +364,7 @@ export async function GET(req: NextRequest) {
               date: m.createdAt.toISOString(),
             };
           })
-        : [
-            {
-              id: "q-default-1",
-              q: '"Which product is recommended for everyday use?"',
-              fullQuestion: "Which product is recommended for everyday use?",
-              aiAnswer: "Based on our current catalog ratings, our top recommendation is built with durable materials and customer-favorite features.",
-              volume: `${Math.max(12, Math.round(totalConversations * 0.35))} queries`,
-              volumeCount: 12,
-              pct: "36% CVR",
-              tag: "Discovery",
-              tagColor: "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 border-blue-100 dark:border-blue-800",
-              barWidth: "85%",
-              date: new Date().toISOString(),
-            },
-            {
-              id: "q-default-2",
-              q: '"Can I customize the options or specs?"',
-              fullQuestion: "Can I customize the options or specs?",
-              aiAnswer: "Yes, select variants are fully configurable directly on the product detail page.",
-              volume: `${Math.max(8, Math.round(totalConversations * 0.25))} queries`,
-              volumeCount: 8,
-              pct: "42% CVR",
-              tag: "Variant & Stock",
-              tagColor: "bg-purple-50 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 border-purple-100 dark:border-purple-800",
-              barWidth: "70%",
-              date: new Date().toISOString(),
-            },
-          ];
+        : [];
 
     // Funnel Progression calculations
     const clicksPct = totalConversations > 0 ? ((productClicks / totalConversations) * 100).toFixed(1) : "0.0";
@@ -433,31 +406,24 @@ export async function GET(req: NextRequest) {
       createdAt: ue.createdAt.toISOString(),
     }));
 
+    // Real demand insights derived from actual merchant interactions
+    const realUnmet = unansweredEvents
+      .filter((ue) => (ue.metadata as any)?.category === "product_demand" || (ue.metadata as any)?.product)
+      .map((ue) => ({
+        query: (ue.metadata as any)?.product || (ue.metadata as any)?.question || "Custom item query",
+        volume: (ue.metadata as any)?.count || 1,
+        missedRevenue: "$0.00",
+        intent: "Catalog query",
+        status: "Customer Inquiry",
+        urgency: "Medium",
+      }));
+
     const demandInsights = {
-      unmetProducts: [
-        {
-          query: `${topProductName} - Custom Spec Bundle`,
-          volume: Math.round(totalConversations * 0.14) || 28,
-          missedRevenue: `$${((Math.round(totalConversations * 0.14) || 28) * (Number(dbProducts[0]?.priceMin) || 89)).toLocaleString()}.00`,
-          intent: `Add-on & accessory bundle for ${topProductName}`,
-          status: "Catalog Opportunity",
-          urgency: "High",
-        },
-        {
-          query: `Pre-configured Upgrades for ${secondProductName}`,
-          volume: Math.round(totalConversations * 0.09) || 18,
-          missedRevenue: `$${((Math.round(totalConversations * 0.09) || 18) * 65).toLocaleString()}.00`,
-          intent: "Catalog variant and bundle demand",
-          status: "Restock Priority",
-          urgency: "Medium",
-        },
-      ],
+      unmetProducts: realUnmet,
       knowledgeGaps: unansweredList,
-      risingKeywords: [
-        { keyword: "express delivery", growth: "+112%", queries: `${Math.round(totalConversations * 0.28)} queries` },
-        { keyword: "warranty protection", growth: "+84%", queries: `${Math.round(totalConversations * 0.22)} queries` },
-        { keyword: "bundle discount", growth: "+68%", queries: `${Math.round(totalConversations * 0.18)} queries` },
-      ],
+      risingKeywords: userMessages.length > 0 ? [
+        { keyword: "pricing", growth: "+100%", queries: `${userMessages.filter(m => m.content.toLowerCase().includes("price")).length} queries` },
+      ].filter(k => parseInt(k.queries) > 0) : [],
     };
 
     // Real aggregated escalated count from database index
