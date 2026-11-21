@@ -1,14 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { resolveCachedTenant } from "@/lib/cache/tenantMemo";
-
-// Website limits per subscription tier
-const PLAN_LIMITS: Record<string, number> = {
-  free: 1,
-  starter: 1,
-  growth: 3,
-  pro: 100, // Effectively unlimited
-};
+import { getBusinessPlan } from "@/lib/billing/entitlements";
+import { encryptSecret, decryptSecret, maskSecret } from "@/lib/security/encryption";
 
 export async function GET(req: NextRequest) {
   try {
@@ -21,65 +15,53 @@ export async function GET(req: NextRequest) {
     }
 
     const business = tenant.business;
+    const plan = await getBusinessPlan(business.id);
 
-    // Get active subscription or default to 'free'
-    const subscription = await prisma.subscription.findFirst({
-      where: { businessId: business.id, status: "active" },
-      orderBy: { createdAt: "desc" },
-    });
+    // Fetch existing integrations and teams
+    const [integrations, teams] = await Promise.all([
+      prisma.integration.findMany({
+        where: { businessId: business.id },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.team.findMany({
+        where: { businessId: business.id },
+        select: { id: true, name: true, type: true },
+      }),
+    ]);
 
-    const planCode = subscription?.planCode?.toLowerCase() || "free";
-    const quota = PLAN_LIMITS[planCode] ?? 1;
+    // Active slots are third-party tools (excluding raw website domains)
+    const activeThirdParty = integrations.filter(
+      (item) => item.provider !== "website" && item.status === "active"
+    );
+    const connectedWebsites = integrations.filter((item) => item.provider === "website");
 
-    // Fetch existing integrations
-    let integrations = await prisma.integration.findMany({
-      where: {
-        businessId: business.id,
-      },
-      orderBy: { createdAt: "desc" },
-    });
-
-    // If no integrations exist yet but business has a websiteUrl, auto-seed a primary integration
-    if (integrations.length === 0 && business.websiteUrl) {
-      try {
-        const domain = new URL(
-          business.websiteUrl.startsWith("http") ? business.websiteUrl : `https://${business.websiteUrl}`
-        ).hostname;
-
-        const seeded = await prisma.integration.create({
-          data: {
-            businessId: business.id,
-            provider: "website",
-            status: "active",
-            externalAccountId: domain,
-            metadata: {
-              name: `${business.name} (Primary)`,
-              url: business.websiteUrl,
-              platform: "custom",
-              isPrimary: true,
-              installedAt: new Date().toISOString(),
-            },
-          },
-        });
-        integrations = [seeded];
-      } catch {
-        // Ignore seeding errors
-      }
-    }
+    const usedSlots = activeThirdParty.length;
+    const maxSlots = plan.maxIntegrationSlots;
+    const canAddSlot = usedSlots < maxSlots;
 
     const formatted = integrations.map((item) => {
       const meta = (item.metadata as Record<string, any>) || {};
-      const isPrimary = meta.isPrimary === true || item.externalAccountId === business.websiteUrl;
+      const decrypted = item.accessTokenEncrypted ? decryptSecret(item.accessTokenEncrypted) : "";
+      const masked = decrypted ? maskSecret(decrypted) : "";
+
       return {
         id: item.id,
         businessId: item.businessId,
+        teamId: item.teamId || null,
         provider: item.provider,
         status: item.status,
-        domain: item.externalAccountId || meta.url || "myshop.com",
-        name: meta.name || item.externalAccountId || "Connected Website",
-        url: meta.url || (item.externalAccountId ? `https://${item.externalAccountId}` : "https://example.com"),
+        domain: item.externalAccountId || meta.url || meta.name || item.provider,
+        name: meta.name || item.externalAccountId || item.provider,
+        url: meta.url || (item.externalAccountId?.startsWith("http") ? item.externalAccountId : null),
         platform: meta.platform || (item.provider === "shopify" ? "shopify" : "custom"),
-        isPrimary,
+        isPrimary: meta.isPrimary === true,
+        maskedCredential: masked,
+        triggers: meta.triggers || {
+          leadCaptured: true,
+          appointmentBooked: true,
+          highIntentQuery: false,
+        },
+        settings: meta.settings || {},
         lastSyncAt: item.lastSyncAt ? item.lastSyncAt.toISOString() : null,
         createdAt: item.createdAt.toISOString(),
       };
@@ -94,12 +76,21 @@ export async function GET(req: NextRequest) {
         websiteUrl: business.websiteUrl,
       },
       plan: {
-        code: planCode,
-        name: planCode.charAt(0).toUpperCase() + planCode.slice(1),
-        websiteQuota: quota,
-        websiteCount: formatted.length,
-        canAddWebsite: formatted.length < quota,
+        code: plan.code,
+        name: plan.name,
+        priceFormatted: plan.priceFormatted,
+        maxConversations: plan.maxConversations,
+        websiteQuota: plan.maxWebsites,
+        websiteCount: connectedWebsites.length,
+        canAddWebsite: connectedWebsites.length < plan.maxWebsites,
+        integrationSlots: {
+          used: usedSlots,
+          max: maxSlots >= 900 ? "Unlimited" : maxSlots,
+          maxNumeric: maxSlots,
+          canAdd: canAddSlot,
+        },
       },
+      teams,
       integrations: formatted,
     });
   } catch (error: any) {
@@ -114,7 +105,18 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { businessId: requestedBizId, name, url, platform = "custom", isPrimary = false } = body;
+    const {
+      businessId: requestedBizId,
+      provider = "webhook",
+      name,
+      url,
+      credential,
+      teamId,
+      platform = "custom",
+      isPrimary = false,
+      triggers,
+      settings = {},
+    } = body;
 
     const tenant = await resolveCachedTenant(requestedBizId);
     if (!tenant || !tenant.business) {
@@ -122,94 +124,121 @@ export async function POST(req: NextRequest) {
     }
 
     const business = tenant.business;
+    const plan = await getBusinessPlan(business.id);
 
-    if (!url || typeof url !== "string") {
-      return NextResponse.json(
-        { error: { message: "A valid website URL is required." } },
-        { status: 400 }
-      );
+    // 1. Handling Website Domain Connection
+    if (provider === "website") {
+      if (!url || typeof url !== "string") {
+        return NextResponse.json({ error: { message: "A valid website URL is required." } }, { status: 400 });
+      }
+
+      let formattedUrl = url.trim();
+      if (!/^https?:\/\//i.test(formattedUrl)) formattedUrl = `https://${formattedUrl}`;
+      let parsedHostname = "";
+      try {
+        parsedHostname = new URL(formattedUrl).hostname.toLowerCase();
+      } catch {
+        return NextResponse.json({ error: { message: "Invalid domain." } }, { status: 400 });
+      }
+
+      const existingWebsitesCount = await prisma.integration.count({
+        where: { businessId: business.id, provider: "website" },
+      });
+
+      if (existingWebsitesCount >= plan.maxWebsites) {
+        return NextResponse.json(
+          {
+            error: {
+              code: "PLAN_QUOTA_EXCEEDED",
+              message: `Your current ${plan.name} plan allows up to ${plan.maxWebsites} connected website(s). Please upgrade to add more storefronts.`,
+            },
+          },
+          { status: 403 }
+        );
+      }
+
+      const makePrimary = Boolean(isPrimary || !business.websiteUrl || existingWebsitesCount === 0);
+      const integration = await prisma.integration.create({
+        data: {
+          businessId: business.id,
+          teamId: teamId || null,
+          provider: platform === "shopify" ? "shopify" : "website",
+          status: "active",
+          externalAccountId: parsedHostname,
+          metadata: {
+            name: name?.trim() || parsedHostname,
+            url: formattedUrl,
+            platform,
+            isPrimary: makePrimary,
+            installedAt: new Date().toISOString(),
+          },
+        },
+      });
+
+      if (makePrimary) {
+        await prisma.business.update({
+          where: { id: business.id },
+          data: { websiteUrl: formattedUrl },
+        });
+      }
+
+      return NextResponse.json({ status: "success", integration }, { status: 201 });
     }
 
-    // Format & validate domain
-    let formattedUrl = url.trim();
-    if (!/^https?:\/\//i.test(formattedUrl)) {
-      formattedUrl = `https://${formattedUrl}`;
-    }
-
-    let parsedHostname = "";
-    try {
-      parsedHostname = new URL(formattedUrl).hostname.toLowerCase();
-    } catch {
-      return NextResponse.json(
-        { error: { message: "Please provide a valid domain (e.g. yourstore.com)." } },
-        { status: 400 }
-      );
-    }
-
-    // Check Plan Quota
-    const subscription = await prisma.subscription.findFirst({
-      where: { businessId: business.id, status: "active" },
-      orderBy: { createdAt: "desc" },
+    // 2. Handling Third-Party Integrations (Slack, Gmail, Google Calendar, HubSpot, etc.)
+    const activeThirdPartyCount = await prisma.integration.count({
+      where: {
+        businessId: business.id,
+        status: "active",
+        provider: { not: "website" },
+      },
     });
 
-    const planCode = subscription?.planCode?.toLowerCase() || "free";
-    const quota = PLAN_LIMITS[planCode] ?? 1;
-
-    const currentCount = await prisma.integration.count({
-      where: { businessId: business.id },
-    });
-
-    if (currentCount >= quota) {
+    if (activeThirdPartyCount >= plan.maxIntegrationSlots) {
       return NextResponse.json(
         {
           error: {
-            code: "PLAN_QUOTA_EXCEEDED",
-            message: `Your current ${planCode.toUpperCase()} plan allows a maximum of ${quota} connected website(s). Please upgrade to Growth or Pro to connect additional storefronts.`,
+            code: "PLAN_SLOT_LIMIT_REACHED",
+            message: `You have reached your limit of ${plan.maxIntegrationSlots} active integration slot(s) on the ${plan.name} plan. Upgrade to Growth ($39/mo) for 4 slots, or Pro for unlimited integrations.`,
           },
         },
         { status: 403 }
       );
     }
 
-    // If marked as primary, or if business has no websiteUrl yet, set this as primary
-    const makePrimary = Boolean(isPrimary || !business.websiteUrl || currentCount === 0);
+    // Encrypt sensitive credential before database persistence
+    const encryptedToken = credential ? encryptSecret(String(credential).trim()) : null;
 
     const integration = await prisma.integration.create({
       data: {
         businessId: business.id,
-        provider: platform === "shopify" ? "shopify" : "website",
+        teamId: teamId || null,
+        provider,
         status: "active",
-        externalAccountId: parsedHostname,
+        externalAccountId: name || provider,
+        accessTokenEncrypted: encryptedToken,
         metadata: {
-          name: name?.trim() || parsedHostname,
-          url: formattedUrl,
-          platform,
-          isPrimary: makePrimary,
+          name: name || `${provider.toUpperCase()} Integration`,
+          triggers: triggers || {
+            leadCaptured: true,
+            appointmentBooked: true,
+            highIntentQuery: false,
+          },
+          settings,
           installedAt: new Date().toISOString(),
         },
       },
     });
-
-    if (makePrimary) {
-      await prisma.business.update({
-        where: { id: business.id },
-        data: { websiteUrl: formattedUrl },
-      });
-    }
 
     return NextResponse.json(
       {
         status: "success",
         integration: {
           id: integration.id,
-          businessId: integration.businessId,
           provider: integration.provider,
+          name: name || provider,
           status: integration.status,
-          domain: parsedHostname,
-          name: name?.trim() || parsedHostname,
-          url: formattedUrl,
-          platform,
-          isPrimary: makePrimary,
+          maskedCredential: credential ? maskSecret(credential) : "",
           createdAt: integration.createdAt.toISOString(),
         },
       },
@@ -218,7 +247,7 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error("[Dashboard Integrations POST] Error:", error);
     return NextResponse.json(
-      { error: { message: error?.message || "Failed to connect website integration." } },
+      { error: { message: error?.message || "Failed to save integration." } },
       { status: 500 }
     );
   }
@@ -227,16 +256,13 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
-    const { id, status, isPrimary } = body;
+    const { id, status, credential, triggers, settings, teamId, isPrimary } = body;
 
     if (!id) {
       return NextResponse.json({ error: { message: "Integration ID is required." } }, { status: 400 });
     }
 
-    const existing = await prisma.integration.findUnique({
-      where: { id },
-    });
-
+    const existing = await prisma.integration.findUnique({ where: { id } });
     if (!existing) {
       return NextResponse.json({ error: { message: "Integration not found." } }, { status: 404 });
     }
@@ -244,7 +270,15 @@ export async function PATCH(req: NextRequest) {
     const currentMeta = (existing.metadata as Record<string, any>) || {};
     const updatedMeta = { ...currentMeta };
 
-    if (isPrimary !== undefined) {
+    if (triggers !== undefined) updatedMeta.triggers = triggers;
+    if (settings !== undefined) updatedMeta.settings = settings;
+
+    let encryptedToken = existing.accessTokenEncrypted;
+    if (credential) {
+      encryptedToken = encryptSecret(String(credential).trim());
+    }
+
+    if (isPrimary !== undefined && existing.provider === "website") {
       updatedMeta.isPrimary = Boolean(isPrimary);
       if (isPrimary && updatedMeta.url) {
         await prisma.business.update({
@@ -258,6 +292,8 @@ export async function PATCH(req: NextRequest) {
       where: { id },
       data: {
         status: status || existing.status,
+        teamId: teamId !== undefined ? teamId : existing.teamId,
+        accessTokenEncrypted: encryptedToken,
         metadata: updatedMeta,
       },
     });
@@ -267,7 +303,7 @@ export async function PATCH(req: NextRequest) {
       integration: {
         id: updated.id,
         status: updated.status,
-        isPrimary: updatedMeta.isPrimary,
+        teamId: updated.teamId,
       },
     });
   } catch (error: any) {
@@ -288,21 +324,16 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: { message: "Integration ID is required." } }, { status: 400 });
     }
 
-    const existing = await prisma.integration.findUnique({
-      where: { id },
-    });
-
+    const existing = await prisma.integration.findUnique({ where: { id } });
     if (!existing) {
       return NextResponse.json({ error: { message: "Integration not found." } }, { status: 404 });
     }
 
-    await prisma.integration.delete({
-      where: { id },
-    });
+    await prisma.integration.delete({ where: { id } });
 
     return NextResponse.json({
       status: "success",
-      message: "Integration disconnected successfully.",
+      message: "Integration removed successfully. Slot freed up.",
     });
   } catch (error: any) {
     console.error("[Dashboard Integrations DELETE] Error:", error);

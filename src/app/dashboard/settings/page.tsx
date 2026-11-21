@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "@/lib/theme/context";
 import { toast } from "@/components/ui/Toast";
+import { IntegrationsSettingsTab } from "@/components/dashboard/settings/IntegrationsSettingsTab";
 
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
@@ -578,53 +579,9 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {/* 6. Integrations Card */}
+      {/* 6. Integrations Tab */}
       {activeTab === "integrations" && (
-        <div className="bg-white dark:bg-[#11141d] rounded-3xl p-6 sm:p-7 border border-slate-100 dark:border-white/[0.08] shadow-sm space-y-4">
-          <div className="flex items-center gap-2">
-            <Zap className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">Connected Platforms &amp; Webhooks</h3>
-          </div>
-          <p className="text-xs text-slate-500 dark:text-slate-400 -mt-2">
-            Configure third-party ecommerce connectors and event webhooks.
-          </p>
-          <div className="space-y-3 pt-1">
-            <div className="p-4 rounded-2xl bg-slate-50/60 dark:bg-[#171b26] border border-slate-100 dark:border-white/[0.08] flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center font-bold text-xs">
-                  <Globe className="w-4 h-4" />
-                </div>
-                <div>
-                  <h4 className="text-xs font-bold text-slate-900 dark:text-white">Connected Websites &amp; Domains</h4>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Manage multi-domain storefronts and embed snippets.</p>
-                </div>
-              </div>
-              <Link
-                href="/dashboard/integrations"
-                className="px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 text-xs font-semibold hover:bg-indigo-100 transition"
-              >
-                Manage Domains &rarr;
-              </Link>
-            </div>
-            <div className="p-4 rounded-2xl bg-slate-50/60 dark:bg-[#171b26] border border-slate-100 dark:border-white/[0.08] flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold text-xs">
-                  S
-                </div>
-                <div>
-                  <h4 className="text-xs font-bold text-slate-900 dark:text-white">Shopify Storefront &amp; Admin API</h4>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Real-time inventory and catalog sync enabled.</p>
-                </div>
-              </div>
-              <Link
-                href="/dashboard/store"
-                className="px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 text-xs font-semibold hover:bg-indigo-100 transition"
-              >
-                Store Settings &rarr;
-              </Link>
-            </div>
-          </div>
-        </div>
+        <IntegrationsSettingsTab businessId={businessId} />
       )}
 
       {/* Disconnect Danger Zone */}

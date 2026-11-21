@@ -1,4 +1,6 @@
+import crypto from "crypto";
 import { prisma } from "@/lib/db/prisma";
+import { decryptSecret } from "@/lib/security/encryption";
 
 export interface LeadNotificationPayload {
   id: string;
@@ -32,6 +34,7 @@ export interface NotificationResult {
     webhook?: boolean;
     email?: boolean;
     whatsapp?: boolean;
+    integrations?: Record<string, boolean>;
   };
   errors?: string[];
 }
@@ -114,6 +117,9 @@ export class MerchantNotifier {
         });
         result.channels.whatsapp = whatsappSent;
       }
+
+      // 4. Dispatch to BYO-Key Active Integrations
+      await this.dispatchToActiveIntegrations(lead.businessId, "lead.captured", webhookPayload, result);
 
       console.log(`[MerchantNotifier] Lead notification completed for biz ${lead.businessId}:`, result.channels);
       return result;
@@ -206,6 +212,9 @@ export class MerchantNotifier {
         });
         result.channels.whatsapp = whatsappSent;
       }
+
+      // 4. Dispatch to BYO-Key Active Integrations
+      await this.dispatchToActiveIntegrations(appointment.businessId, "appointment.booked", webhookPayload, result);
 
       console.log(`[MerchantNotifier] Appointment notification completed for biz ${appointment.businessId}:`, result.channels);
       return result;
@@ -491,6 +500,232 @@ export class MerchantNotifier {
       </html>
     `;
   }
+
+  /**
+   * Dispatches events to BYO-key connected third-party integrations (Slack, Discord, HubSpot, Webhooks, etc.)
+   */
+  private async dispatchToActiveIntegrations(
+    businessId: string,
+    event: "lead.captured" | "appointment.booked",
+    payload: any,
+    result: NotificationResult
+  ): Promise<void> {
+    if (!businessId) return;
+
+    try {
+      const integrations = await prisma.integration.findMany({
+        where: {
+          businessId,
+          status: "active",
+          provider: { not: "website" },
+        },
+      });
+
+      if (!integrations || integrations.length === 0) return;
+
+      if (!result.channels.integrations) {
+        result.channels.integrations = {};
+      }
+
+      for (const item of integrations) {
+        try {
+          const meta = (item.metadata as Record<string, any>) || {};
+          const triggers = meta.triggers || {};
+
+          // Check event trigger filters
+          if (event === "lead.captured" && triggers.leadCaptured === false) continue;
+          if (event === "appointment.booked" && triggers.appointmentBooked === false) continue;
+
+          // Decrypt secret credential
+          let credential = "";
+          if (item.accessTokenEncrypted) {
+            try {
+              credential = decryptSecret(item.accessTokenEncrypted);
+            } catch {
+              credential = item.accessTokenEncrypted;
+            }
+          }
+
+          const provider = (item.provider || "").toLowerCase();
+
+          // 1. Slack Incoming Webhook
+          if (provider === "slack") {
+            const webhookUrl = credential || meta.webhookUrl;
+            if (webhookUrl && webhookUrl.startsWith("http")) {
+              const textSummary =
+                event === "lead.captured"
+                  ? `🎯 *New Lead Captured:* ${payload.data?.name || "Shopper"} (${payload.data?.email || "No email"})`
+                  : `📅 *New Appointment Booked:* ${payload.data?.customerName || "Customer"} - ${payload.data?.serviceName || "Consultation"}`;
+
+              const res = await fetch(webhookUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  text: textSummary,
+                  blocks: [
+                    {
+                      type: "header",
+                      text: {
+                        type: "plain_text",
+                        text: event === "lead.captured" ? "🎯 New Shopper Lead" : "📅 New Appointment Booked",
+                      },
+                    },
+                    {
+                      type: "section",
+                      fields:
+                        event === "lead.captured"
+                          ? [
+                              { type: "mrkdwn", text: `*Name:*\n${payload.data?.name || "N/A"}` },
+                              { type: "mrkdwn", text: `*Email:*\n${payload.data?.email || "N/A"}` },
+                              { type: "mrkdwn", text: `*Phone:*\n${payload.data?.phone || "N/A"}` },
+                              { type: "mrkdwn", text: `*Source:*\n${payload.data?.source || "Chat Widget"}` },
+                            ]
+                          : [
+                              { type: "mrkdwn", text: `*Client:*\n${payload.data?.customerName || "N/A"}` },
+                              { type: "mrkdwn", text: `*Service:*\n${payload.data?.serviceName || "Consultation"}` },
+                              {
+                                type: "mrkdwn",
+                                text: `*Date/Time:*\n${new Date(payload.data?.startAt).toLocaleString()}`,
+                              },
+                              {
+                                type: "mrkdwn",
+                                text: `*Contact:*\n${payload.data?.customerEmail || payload.data?.customerPhone || "N/A"}`,
+                              },
+                            ],
+                    },
+                  ],
+                }),
+                signal: AbortSignal.timeout(5000),
+              });
+              result.channels.integrations[`slack_${item.id}`] = res.ok;
+            }
+          }
+          // 2. Discord Webhook
+          else if (provider === "discord") {
+            const webhookUrl = credential || meta.webhookUrl;
+            if (webhookUrl && webhookUrl.startsWith("http")) {
+              const isLead = event === "lead.captured";
+              const res = await fetch(webhookUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  content: isLead
+                    ? `🎯 **New Lead:** ${payload.data?.name}`
+                    : `📅 **New Appointment:** ${payload.data?.customerName} - ${payload.data?.serviceName}`,
+                  embeds: [
+                    {
+                      title: isLead ? payload.data?.name : payload.data?.customerName,
+                      color: isLead ? 0x4f46e5 : 0x10b981,
+                      fields: isLead
+                        ? [
+                            { name: "Email", value: payload.data?.email || "N/A", inline: true },
+                            { name: "Phone", value: payload.data?.phone || "N/A", inline: true },
+                            { name: "Notes", value: payload.data?.notes || "Inquired via chat widget" },
+                          ]
+                        : [
+                            { name: "Service", value: payload.data?.serviceName || "Consultation", inline: true },
+                            { name: "Time", value: new Date(payload.data?.startAt).toLocaleString(), inline: true },
+                            { name: "Email", value: payload.data?.customerEmail || "N/A", inline: true },
+                            { name: "Phone", value: payload.data?.customerPhone || "N/A", inline: true },
+                          ],
+                      footer: { text: "NE_Sale Automated Integration Dispatch" },
+                      timestamp: new Date().toISOString(),
+                    },
+                  ],
+                }),
+                signal: AbortSignal.timeout(5000),
+              });
+              result.channels.integrations[`discord_${item.id}`] = res.ok;
+            }
+          }
+          // 3. Custom Webhook
+          else if (provider === "webhook") {
+            const webhookUrl = credential || meta.webhookUrl;
+            if (webhookUrl && webhookUrl.startsWith("http")) {
+              const headers: Record<string, string> = {
+                "Content-Type": "application/json",
+                "User-Agent": "NE_Sale-Webhook/1.0",
+                "X-NE-Sale-Event": event,
+              };
+              if (meta.secret) {
+                const hmac = crypto
+                  .createHmac("sha256", meta.secret)
+                  .update(JSON.stringify(payload))
+                  .digest("hex");
+                headers["X-NE-Sale-Signature"] = hmac;
+              }
+              const res = await fetch(webhookUrl, {
+                method: "POST",
+                headers,
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(5000),
+              });
+              result.channels.integrations[`webhook_${item.id}`] = res.ok;
+            }
+          }
+          // 4. HubSpot CRM
+          else if (provider === "hubspot" && event === "lead.captured") {
+            const token = credential;
+            if (token) {
+              const [firstName, ...rest] = (payload.data?.name || "").split(" ");
+              const res = await fetch("https://api.hubapi.com/crm/v3/objects/contacts", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                  properties: {
+                    email: payload.data?.email,
+                    firstname: firstName || "Shopper",
+                    lastname: rest.join(" ") || "",
+                    phone: payload.data?.phone || "",
+                    lifecyclestage: "lead",
+                    message: payload.data?.notes || "Captured via NE_Sale AI Shopper",
+                  },
+                }),
+                signal: AbortSignal.timeout(5000),
+              });
+              result.channels.integrations[`hubspot_${item.id}`] = res.ok;
+            }
+          }
+          // 5. WhatsApp routing
+          else if (provider === "whatsapp") {
+            const phoneNumberId = meta.phoneNumberId;
+            const token = credential;
+            const recipient = meta.recipientPhone || payload.data?.phone;
+            if (phoneNumberId && token && recipient) {
+              const res = await fetch(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                  messaging_product: "whatsapp",
+                  to: recipient,
+                  type: "text",
+                  text: {
+                    body:
+                      event === "lead.captured"
+                        ? `🎯 *New Lead:* ${payload.data?.name} (${payload.data?.email || "No email"})\nPhone: ${payload.data?.phone || "N/A"}`
+                        : `📅 *New Appointment:* ${payload.data?.customerName} on ${new Date(payload.data?.startAt).toLocaleString()}`,
+                  },
+                }),
+                signal: AbortSignal.timeout(5000),
+              });
+              result.channels.integrations[`whatsapp_${item.id}`] = res.ok;
+            }
+          }
+        } catch (itemErr: any) {
+          console.warn(`[MerchantNotifier] Dispatch error for integration ${item.id} (${item.provider}):`, itemErr?.message);
+        }
+      }
+    } catch (dbErr: any) {
+      console.warn("[MerchantNotifier] Failed to query active integrations:", dbErr?.message);
+    }
+  }
+
 }
 
 function escapeHtml(text: string): string {

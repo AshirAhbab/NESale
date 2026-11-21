@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MerchantNotifier } from "./notifier";
+import { prisma } from "@/lib/db/prisma";
+import { encryptSecret } from "@/lib/security/encryption";
 
 describe("MerchantNotifier", () => {
   let notifier: MerchantNotifier;
@@ -10,6 +12,7 @@ describe("MerchantNotifier", () => {
   });
 
   it("handles lead capture notification gracefully when no channels configured", async () => {
+    vi.spyOn(prisma.integration, "findMany").mockResolvedValue([]);
     const result = await notifier.notifyLeadCaptured(
       {
         id: "lead_123",
@@ -33,6 +36,7 @@ describe("MerchantNotifier", () => {
   });
 
   it("dispatches webhook when webhook URL is present", async () => {
+    vi.spyOn(prisma.integration, "findMany").mockResolvedValue([]);
     const fetchMock = vi.spyOn(global, "fetch").mockResolvedValue({
       ok: true,
       status: 200,
@@ -61,6 +65,7 @@ describe("MerchantNotifier", () => {
   });
 
   it("dispatches appointment booking notification", async () => {
+    vi.spyOn(prisma.integration, "findMany").mockResolvedValue([]);
     const fetchMock = vi.spyOn(global, "fetch").mockResolvedValue({
       ok: true,
       status: 200,
@@ -89,5 +94,54 @@ describe("MerchantNotifier", () => {
     expect(fetchMock).toHaveBeenCalled();
     expect(result.channels.webhook).toBe(true);
     expect(result.success).toBe(true);
+  });
+
+  it("dispatches lead capture event to BYO-key active Slack integration with decrypted webhook", async () => {
+    const rawSlackUrl = "https://hooks.slack.com/services/T11/B22/SEC123";
+    const encryptedUrl = encryptSecret(rawSlackUrl);
+
+    vi.spyOn(prisma.integration, "findMany").mockResolvedValue([
+      {
+        id: "integ_slack_1",
+        businessId: "biz_test",
+        provider: "slack",
+        status: "active",
+        accessTokenEncrypted: encryptedUrl,
+        metadata: {
+          triggers: { leadCaptured: true, appointmentBooked: false },
+        },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        externalAccountId: null,
+        refreshTokenEncrypted: null,
+        tokenExpiresAt: null,
+        teamId: null,
+      } as any,
+    ]);
+
+    const fetchMock = vi.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+    } as Response);
+
+    const result = await notifier.notifyLeadCaptured(
+      {
+        id: "lead_999",
+        businessId: "biz_test",
+        name: "Diana Prince",
+        email: "diana@themyscira.com",
+        phone: "+1555000111",
+        createdAt: new Date().toISOString(),
+      },
+      {
+        name: "Hero Supplies",
+      }
+    );
+
+    expect(fetchMock).toHaveBeenCalled();
+    const calls = fetchMock.mock.calls;
+    const slackCall = calls.find((c) => c[0] === rawSlackUrl);
+    expect(slackCall).toBeDefined();
+    expect(result.channels.integrations?.slack_integ_slack_1).toBe(true);
   });
 });
