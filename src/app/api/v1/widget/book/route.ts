@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { merchantNotifier } from "@/lib/notifications/notifier";
 import { rateLimiter } from "@/lib/security/rateLimiter";
+import { validateWidgetOrigin } from "@/lib/security/originCheck";
 import { isServicesBusiness } from "@/lib/business/types";
 import {
   findBusinessBySlugOrId,
@@ -16,7 +17,13 @@ import {
   zonedDateTime,
 } from "@/lib/booking/availability";
 
+export async function OPTIONS(req: NextRequest) {
+  const cors = validateWidgetOrigin(req);
+  return new NextResponse(null, { status: 204, headers: cors.headers });
+}
+
 export async function POST(req: NextRequest) {
+  const cors = validateWidgetOrigin(req);
   try {
     const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
     const rateLimit = await rateLimiter.limitBooking(clientIp);
@@ -28,7 +35,7 @@ export async function POST(req: NextRequest) {
             message: "Too many appointment requests. Please try again in a few moments.",
           },
         },
-        { status: 429, headers: rateLimiter.formatHeaders(rateLimit) }
+        { status: 429, headers: { ...cors.headers, ...rateLimiter.formatHeaders(rateLimit) } }
       );
     }
 
@@ -136,34 +143,53 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (
-      booked.some((b) => start.getTime() < b.endAt.getTime() && b.startAt.getTime() < end.getTime())
-    ) {
-      return NextResponse.json(
-        { error: { message: "That time is already booked. Please pick another slot." } },
-        { status: 409 }
-      );
-    }
+    // Atomic transaction preventing concurrent double-booking of the same slot
+    let appointment;
+    try {
+      appointment = await prisma.$transaction(async (tx) => {
+        const activeOverlap = await tx.appointment.findFirst({
+          where: {
+            businessId: business.id,
+            status: { in: ["confirmed", "pending"] },
+            startAt: { lt: end },
+            endAt: { gt: start },
+            ...(staffId ? { staffId } : {}),
+          },
+        });
 
-    const appointment = await prisma.appointment.create({
-      data: {
-        businessId: business.id,
-        teamId: body.teamId || null,
-        serviceId,
-        staffId,
-        customerName,
-        customerEmail,
-        customerPhone,
-        startAt: start,
-        endAt: end,
-        status: context.autoConfirm ? "confirmed" : "pending",
-        source: body.source || "widget",
-        notes: body.notes || null,
-        conversationId: body.conversationId || body.conversation_id || null,
-        metadata: body.metadata || {},
-      },
-      include: { service: { select: { name: true } }, staff: { select: { name: true } } },
-    });
+        if (activeOverlap) {
+          throw new Error("SLOT_ALREADY_BOOKED");
+        }
+
+        return tx.appointment.create({
+          data: {
+            businessId: business.id,
+            teamId: body.teamId || null,
+            serviceId,
+            staffId,
+            customerName,
+            customerEmail,
+            customerPhone,
+            startAt: start,
+            endAt: end,
+            status: context.autoConfirm ? "confirmed" : "pending",
+            source: body.source || "widget",
+            notes: body.notes || null,
+            conversationId: body.conversationId || body.conversation_id || null,
+            metadata: body.metadata || {},
+          },
+          include: { service: { select: { name: true } }, staff: { select: { name: true } } },
+        });
+      });
+    } catch (txErr: any) {
+      if (txErr?.message === "SLOT_ALREADY_BOOKED") {
+        return NextResponse.json(
+          { error: { message: "That time was just booked by another customer. Please pick another slot." } },
+          { status: 409, headers: cors.headers }
+        );
+      }
+      throw txErr;
+    }
 
     // Fire-and-forget instant merchant notification (webhook / email / whatsapp)
     void merchantNotifier.notifyAppointmentBooked({

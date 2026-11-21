@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
     const requestedBizId = searchParams.get("businessId");
 
     // 1. Fast Memoized Tenant & User Resolution (< 1ms when cached)
-    const tenant = await resolveCachedTenant(requestedBizId);
+    const tenant = await resolveCachedTenant(req, requestedBizId);
     const _t1 = Date.now();
     console.log(`[Overview] tenant resolved in ${_t1 - _t0}ms`);
     if (!tenant || !tenant.business) {
@@ -183,7 +183,7 @@ export async function GET(req: NextRequest) {
             progression: clicksProgVal.toFixed(1),
             drop: clicksDropVal.toFixed(1),
             dropCount: clicksDropCount,
-            attributedRevenue: `$${(totalRevenueNum * 1.0).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
+            attributedRevenue: `$${totalRevenueNum.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
             avgTime: "45s engagement",
             topIntent: "Product Discovery & Inquiries",
             color: "from-indigo-600 to-indigo-500",
@@ -197,7 +197,7 @@ export async function GET(req: NextRequest) {
             progression: cartProgVal.toFixed(1),
             drop: cartDropVal.toFixed(1),
             dropCount: cartDropCount,
-            attributedRevenue: `$${(totalRevenueNum * 0.72).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
+            attributedRevenue: `$${totalRevenueNum.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
             avgTime: "1m 15s viewing",
             topIntent: "Specifications & Pricing",
             color: "from-indigo-500 to-blue-500",
@@ -211,7 +211,7 @@ export async function GET(req: NextRequest) {
             progression: purchaseProgVal.toFixed(1),
             drop: purchaseDropVal.toFixed(1),
             dropCount: purchaseDropCount,
-            attributedRevenue: `$${(totalRevenueNum * 0.88).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
+            attributedRevenue: `$${totalRevenueNum.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
             avgTime: "2m 30s checkout",
             topIntent: "Bundle & Discount Queries",
             color: "from-blue-500 to-emerald-500",

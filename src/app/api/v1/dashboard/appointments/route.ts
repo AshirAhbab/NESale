@@ -32,7 +32,7 @@ function serialize(appointment: any) {
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const tenant = await resolveCachedTenant(searchParams.get("businessId"));
+    const tenant = await resolveCachedTenant(req, searchParams.get("businessId"));
     if (!tenant || !tenant.business) {
       return NextResponse.json({ status: "success", total: 0, appointments: [] });
     }
@@ -80,7 +80,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const tenant = await resolveCachedTenant(body.businessId);
+    const tenant = await resolveCachedTenant(req, body.businessId);
     if (!tenant || !tenant.business) {
       return NextResponse.json({ error: { message: "No business found" } }, { status: 404 });
     }
@@ -152,23 +152,47 @@ export async function POST(req: NextRequest) {
 
     const status = BOOKABLE_STATUSES.includes(body.status) ? body.status : "pending";
 
-    const appointment = await prisma.appointment.create({
-      data: {
-        businessId: business.id,
-        teamId: body.teamId || null,
-        serviceId: body.serviceId || null,
-        staffId: body.staffId || null,
-        customerName,
-        customerEmail: body.customerEmail || null,
-        customerPhone: body.customerPhone || null,
-        startAt: start,
-        endAt: end,
-        status,
-        source: "dashboard",
-        notes: body.notes || null,
-      },
-      include: { service: { select: { name: true } }, staff: { select: { name: true } } },
-    });
+    let appointment;
+    try {
+      appointment = await prisma.$transaction(async (tx) => {
+        const activeOverlap = await tx.appointment.findFirst({
+          where: {
+            businessId: business.id,
+            status: { in: ["confirmed", "pending"] },
+            startAt: { lt: end },
+            endAt: { gt: start },
+            ...(body.staffId ? { staffId: body.staffId } : {}),
+          },
+        });
+
+        if (activeOverlap) {
+          throw new Error("SLOT_ALREADY_BOOKED");
+        }
+
+        return tx.appointment.create({
+          data: {
+            businessId: business.id,
+            teamId: body.teamId || null,
+            serviceId: body.serviceId || null,
+            staffId: body.staffId || null,
+            customerName,
+            customerEmail: body.customerEmail || null,
+            customerPhone: body.customerPhone || null,
+            startAt: start,
+            endAt: end,
+            status,
+            source: "dashboard",
+            notes: body.notes || null,
+          },
+          include: { service: { select: { name: true } }, staff: { select: { name: true } } },
+        });
+      });
+    } catch (txErr: any) {
+      if (txErr?.message === "SLOT_ALREADY_BOOKED") {
+        return NextResponse.json({ error: { message: "That time was just booked by another customer." } }, { status: 409 });
+      }
+      throw txErr;
+    }
 
     return NextResponse.json({ status: "success", appointment: serialize(appointment) });
   } catch (error: any) {

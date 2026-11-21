@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
     const requestedBizId = searchParams.get("businessId");
 
     // 1. Fast Memoized Tenant Resolution (< 1ms when cached)
-    const tenant = await resolveCachedTenant(requestedBizId);
+    const tenant = await resolveCachedTenant(req, requestedBizId);
     if (!tenant || !tenant.business) {
       return NextResponse.json({ error: { message: "No business tenant found." } }, { status: 404 });
     }
@@ -199,7 +199,7 @@ export async function GET(req: NextRequest) {
           ? "100.0"
           : "0.0";
 
-      const benchRev = Math.round(sliceRev * 0.78);
+      const benchRev = sliceRev > 0 ? Math.round(sliceRev * 0.85) : 0;
 
       chartPoints.push({
         date: dateLabel,
@@ -345,22 +345,22 @@ export async function GET(req: NextRequest) {
               m.conversation?.messages?.[0]?.content ||
               "I recommended the optimal item from our live catalog and offered direct checkout assistance.";
 
-            // Dynamic conversion rate based on whether conversation converted
+            // Real conversion rate based on actual conversation outcomes
             const convoMeta = (m.conversation?.metadata as Record<string, any>) || {};
-            const cvrRate = convoMeta.cartAdded ? "42% CVR" : convoMeta.recommendedProduct ? "34% CVR" : "28% CVR";
-            const volumeNum = Math.max(8, Math.round(totalConversations * (0.35 - i * 0.05)));
+            const cvrRate = convoMeta.cartAdded ? "Added to Cart" : convoMeta.recommendedProduct ? "Recommended" : "Inquired";
+            const volumeNum = Math.max(1, userMessages.filter((msg) => msg.content.toLowerCase().includes(m.content.toLowerCase().slice(0, 15))).length);
 
             return {
               id: m.id,
               q: `"${truncated}"`,
               fullQuestion: cleanContent,
               aiAnswer: assistantReply,
-              volume: `${volumeNum} queries`,
+              volume: `${volumeNum} ${volumeNum === 1 ? "query" : "queries"}`,
               volumeCount: volumeNum,
               pct: cvrRate,
               tag,
               tagColor,
-              barWidth: `${Math.max(30, 88 - i * 14)}%`,
+              barWidth: `${Math.max(20, Math.min(100, Math.round((volumeNum / Math.max(1, userMessages.length)) * 100)))}%`,
               date: m.createdAt.toISOString(),
             };
           })
@@ -378,19 +378,19 @@ export async function GET(req: NextRequest) {
     const organicBaselineCvr = 1.7;
     const liftMultiplier =
       totalConversations > 0 && orderCount > 0
-        ? Math.max(1.5, Number(overallCvr) / organicBaselineCvr).toFixed(1)
-        : "2.4";
+        ? Math.max(1.0, Number(overallCvr) / organicBaselineCvr).toFixed(1)
+        : "1.0";
 
     const dailyAverageRevenue = (totalRevenue / days).toFixed(2);
 
     // Dynamic Basket Size calculation
-    const assistedBasketSize = orderCount > 0 ? (Math.max(orderCount * 1.5, cartAdditions) / orderCount).toFixed(1) : "2.3";
-    const organicBasketSize = 1.6;
-    const basketLiftPct = (((parseFloat(assistedBasketSize) - organicBasketSize) / organicBasketSize) * 100).toFixed(1);
+    const assistedBasketSize = orderCount > 0 ? (Math.max(orderCount, cartAdditions) / orderCount).toFixed(1) : "0.0";
+    const organicBasketSize = orderCount > 0 ? 1.6 : 0.0;
+    const basketLiftPct = organicBasketSize > 0 ? (((parseFloat(assistedBasketSize) - organicBasketSize) / organicBasketSize) * 100).toFixed(1) : "0.0";
 
     // Dynamic AOV lift calculation
     const organicAov = 68.50;
-    const aovLiftPct = aov > 0 ? (((aov - organicAov) / organicAov) * 100).toFixed(1) : "21.2";
+    const aovLiftPct = aov > 0 && organicAov > 0 ? (((aov - organicAov) / organicAov) * 100).toFixed(1) : "0.0";
 
     // Dynamic Demand Insights tailored to the business tenant
     const topProductName = dbProducts[0]?.name || "Featured Product";

@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Resolve and authorize tenant
-    const tenant = await resolveCachedTenant(businessId);
+    const tenant = await resolveCachedTenant(req, businessId);
     if (!tenant || !tenant.business) {
       return NextResponse.json(
         { error: { code: "TENANT_NOT_FOUND", message: "Business not found", requestId } },

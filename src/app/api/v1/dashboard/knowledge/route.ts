@@ -12,9 +12,10 @@ const KNOWLEDGE_RATE_LIMIT_MAX = 60;
  * Returns the authorized businessId or null if unauthorized.
  */
 async function resolveAuthorizedBusinessId(
+  req: NextRequest,
   requestedBizId: string | null
 ): Promise<{ businessId: string; businessName: string } | null> {
-  const tenant = await resolveCachedTenant(requestedBizId ?? undefined);
+  const tenant = await resolveCachedTenant(req, requestedBizId ?? undefined);
   if (!tenant || !tenant.business) {
     return null;
   }
@@ -60,7 +61,7 @@ export async function GET(req: NextRequest) {
     }
 
     // Authorize business context
-    const auth = await resolveAuthorizedBusinessId(requestedBizId);
+    const auth = await resolveAuthorizedBusinessId(req, requestedBizId);
     if (!auth) {
       return NextResponse.json(
         { error: { message: "Business not found or access denied." } },
@@ -158,7 +159,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Authorize business context
-    const auth = await resolveAuthorizedBusinessId(requestedBizId ?? null);
+    const auth = await resolveAuthorizedBusinessId(req, requestedBizId ?? null);
     if (!auth) {
       return NextResponse.json(
         { error: { message: "Business not found or access denied." } },
@@ -247,7 +248,7 @@ export async function DELETE(req: NextRequest) {
     }
 
     // Authorize business context
-    const auth = await resolveAuthorizedBusinessId(requestedBizId ?? null);
+    const auth = await resolveAuthorizedBusinessId(req, requestedBizId ?? null);
     if (!auth) {
       return NextResponse.json(
         { error: { message: "Business not found or access denied." } },

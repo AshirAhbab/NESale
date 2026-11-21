@@ -8,7 +8,7 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const businessId = searchParams.get("businessId");
 
-    const tenant = await resolveCachedTenant(businessId);
+    const tenant = await resolveCachedTenant(req, businessId);
     if (!tenant || !tenant.business) {
       return NextResponse.json(
         { error: { message: "Unauthorized or business tenant not found." } },

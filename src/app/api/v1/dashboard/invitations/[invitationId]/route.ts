@@ -39,7 +39,7 @@ export async function GET(
       );
     }
 
-    const tenant = await resolveCachedTenant(requestedBizId ?? undefined);
+    const tenant = await resolveCachedTenant(req, requestedBizId ?? undefined);
     if (!tenant || !tenant.business) {
       return NextResponse.json(
         { error: { message: "Business not found or access denied." } },
@@ -122,7 +122,7 @@ export async function DELETE(
   const requestedBizId = searchParams.get("businessId");
 
   try {
-    const tenant = await resolveCachedTenant(requestedBizId ?? undefined);
+    const tenant = await resolveCachedTenant(req, requestedBizId ?? undefined);
     if (!tenant || !tenant.business) {
       return NextResponse.json(
         { error: { message: "Business not found or access denied." } },

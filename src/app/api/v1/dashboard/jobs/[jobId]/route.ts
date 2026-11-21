@@ -14,7 +14,7 @@ export async function GET(
   const businessId = searchParams.get("businessId");
 
   try {
-    const tenant = await resolveCachedTenant(businessId ?? undefined);
+    const tenant = await resolveCachedTenant(req, businessId ?? undefined);
     if (!tenant || !tenant.business) {
       return NextResponse.json(
         { error: { message: "Business not found or access denied." } },
@@ -25,7 +25,7 @@ export async function GET(
     const job = await prisma.job.findFirst({
       where: {
         id: jobId,
-        ...(businessId ? { businessId } : {}),
+        businessId: tenant.business.id,
       },
     });
 
@@ -70,7 +70,7 @@ export async function POST(
   const businessId = searchParams.get("businessId");
 
   try {
-    const tenant = await resolveCachedTenant(businessId ?? undefined);
+    const tenant = await resolveCachedTenant(req, businessId ?? undefined);
     if (!tenant || !tenant.business) {
       return NextResponse.json(
         { error: { message: "Access denied." } },

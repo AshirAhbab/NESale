@@ -1,7 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
+import { resolveCachedTenant } from "@/lib/cache/tenantMemo";
+
+function isSafeUrl(urlStr: string): boolean {
+  try {
+    const parsed = new URL(urlStr);
+    if (parsed.protocol !== "https:" && (process.env.NODE_ENV === "production" || parsed.protocol !== "http:")) {
+      return false;
+    }
+    const host = parsed.hostname.toLowerCase();
+    const isPrivate =
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "0.0.0.0" ||
+      host === "169.254.169.254" ||
+      host.endsWith(".internal") ||
+      host.endsWith(".local") ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host);
+
+    if (isPrivate && process.env.NODE_ENV === "production") {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
+    const tenant = await resolveCachedTenant(req);
+    if (!tenant?.business?.id) {
+      return NextResponse.json(
+        { success: false, message: "Unauthorized: Active merchant session required to test integrations." },
+        { status: 401 }
+      );
+    }
+
     const body = await req.json();
     const { provider, credential, metadata = {} } = body;
 
@@ -13,6 +49,16 @@ export async function POST(req: NextRequest) {
     }
 
     const trimmed = credential.trim();
+
+    // SSRF protection for outbound webhook URLs
+    if (provider === "slack" || provider === "discord" || provider === "webhook") {
+      if (!isSafeUrl(trimmed)) {
+        return NextResponse.json(
+          { success: false, message: "Invalid or disallowed destination URL format." },
+          { status: 400 }
+        );
+      }
+    }
 
     // 1. Slack / Discord Webhook Test
     if (provider === "slack" || provider === "discord") {

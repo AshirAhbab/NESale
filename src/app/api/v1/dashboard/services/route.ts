@@ -7,7 +7,7 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const businessId = searchParams.get("businessId");
 
-    const tenant = await resolveCachedTenant(businessId);
+    const tenant = await resolveCachedTenant(req, businessId);
     if (!tenant || !tenant.business) {
       return NextResponse.json({ status: "success", services: [] });
     }
@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { businessId, name, category, priceMin, durationMinutes, bookingUrl } = body;
 
-    const tenant = await resolveCachedTenant(businessId);
+    const tenant = await resolveCachedTenant(req, businessId);
     if (!tenant || !tenant.business) {
       return NextResponse.json({ error: { message: "No business found" } }, { status: 404 });
     }
@@ -97,7 +97,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: { message: "Service ID is required" } }, { status: 400 });
     }
 
-    const tenant = await resolveCachedTenant(businessId);
+    const tenant = await resolveCachedTenant(req, businessId);
     if (!tenant || !tenant.business) {
       return NextResponse.json({ error: { message: "No business found" } }, { status: 404 });
     }
@@ -156,7 +156,7 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: { message: "Service ID is required" } }, { status: 400 });
     }
 
-    const tenant = await resolveCachedTenant(businessId);
+    const tenant = await resolveCachedTenant(req, businessId);
     if (!tenant || !tenant.business) {
       return NextResponse.json({ error: { message: "No business found" } }, { status: 404 });
     }

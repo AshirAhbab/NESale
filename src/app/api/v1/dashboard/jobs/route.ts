@@ -8,7 +8,7 @@ export async function GET(req: NextRequest) {
   const limit = Number(searchParams.get("limit") || "50");
 
   try {
-    const tenant = await resolveCachedTenant(businessId ?? undefined);
+    const tenant = await resolveCachedTenant(req, businessId ?? undefined);
     if (!tenant || !tenant.business) {
       return NextResponse.json(
         { error: { message: "Business not found or access denied." } },
@@ -16,13 +16,10 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const where: Record<string, unknown> = {};
-    if (businessId) {
-      where.businessId = businessId;
-    }
+    const currentBizId = tenant.business.id;
 
     const jobs = await prisma.job.findMany({
-      where,
+      where: { businessId: currentBizId },
       orderBy: { createdAt: "desc" },
       take: limit,
     });

@@ -7,7 +7,7 @@ import { isValidTimeString, timeToMinutes } from "@/lib/booking/availability";
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const tenant = await resolveCachedTenant(searchParams.get("businessId"));
+    const tenant = await resolveCachedTenant(req, searchParams.get("businessId"));
     if (!tenant || !tenant.business) {
       return NextResponse.json({ status: "success", timezone: "UTC", schedules: [], staff: [] });
     }
@@ -50,7 +50,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const tenant = await resolveCachedTenant(body.businessId);
+    const tenant = await resolveCachedTenant(req, body.businessId);
     if (!tenant || !tenant.business) {
       return NextResponse.json({ error: { message: "No business found" } }, { status: 404 });
     }

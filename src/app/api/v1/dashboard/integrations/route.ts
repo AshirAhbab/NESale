@@ -9,7 +9,7 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const requestedBizId = searchParams.get("businessId");
 
-    const tenant = await resolveCachedTenant(requestedBizId);
+    const tenant = await resolveCachedTenant(req, requestedBizId);
     if (!tenant || !tenant.business) {
       return NextResponse.json({ error: { message: "No business found." } }, { status: 404 });
     }
@@ -118,7 +118,7 @@ export async function POST(req: NextRequest) {
       settings = {},
     } = body;
 
-    const tenant = await resolveCachedTenant(requestedBizId);
+    const tenant = await resolveCachedTenant(req, requestedBizId);
     if (!tenant || !tenant.business) {
       return NextResponse.json({ error: { message: "No business found." } }, { status: 404 });
     }
@@ -255,6 +255,11 @@ export async function POST(req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
   try {
+    const tenant = await resolveCachedTenant(req);
+    if (!tenant?.business?.id) {
+      return NextResponse.json({ error: { message: "Unauthorized: Active merchant session required." } }, { status: 401 });
+    }
+
     const body = await req.json();
     const { id, status, credential, triggers, settings, teamId, isPrimary } = body;
 
@@ -263,8 +268,8 @@ export async function PATCH(req: NextRequest) {
     }
 
     const existing = await prisma.integration.findUnique({ where: { id } });
-    if (!existing) {
-      return NextResponse.json({ error: { message: "Integration not found." } }, { status: 404 });
+    if (!existing || existing.businessId !== tenant.business.id) {
+      return NextResponse.json({ error: { message: "Integration not found or access denied." } }, { status: 404 });
     }
 
     const currentMeta = (existing.metadata as Record<string, any>) || {};
@@ -289,7 +294,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     const updated = await prisma.integration.update({
-      where: { id },
+      where: { id: existing.id },
       data: {
         status: status || existing.status,
         teamId: teamId !== undefined ? teamId : existing.teamId,
@@ -317,6 +322,11 @@ export async function PATCH(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   try {
+    const tenant = await resolveCachedTenant(req);
+    if (!tenant?.business?.id) {
+      return NextResponse.json({ error: { message: "Unauthorized: Active merchant session required." } }, { status: 401 });
+    }
+
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
 
@@ -325,11 +335,11 @@ export async function DELETE(req: NextRequest) {
     }
 
     const existing = await prisma.integration.findUnique({ where: { id } });
-    if (!existing) {
-      return NextResponse.json({ error: { message: "Integration not found." } }, { status: 404 });
+    if (!existing || existing.businessId !== tenant.business.id) {
+      return NextResponse.json({ error: { message: "Integration not found or access denied." } }, { status: 404 });
     }
 
-    await prisma.integration.delete({ where: { id } });
+    await prisma.integration.delete({ where: { id: existing.id } });
 
     return NextResponse.json({
       status: "success",

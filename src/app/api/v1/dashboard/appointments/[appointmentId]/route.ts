@@ -40,7 +40,7 @@ export async function PATCH(
   try {
     const { appointmentId } = await params;
     const body = await req.json();
-    const tenant = await resolveCachedTenant(body.businessId);
+    const tenant = await resolveCachedTenant(req, body.businessId);
     if (!tenant || !tenant.business) {
       return NextResponse.json({ error: { message: "No business found" } }, { status: 404 });
     }
@@ -145,7 +145,7 @@ export async function DELETE(
   try {
     const { appointmentId } = await params;
     const { searchParams } = new URL(req.url);
-    const tenant = await resolveCachedTenant(searchParams.get("businessId"));
+    const tenant = await resolveCachedTenant(req, searchParams.get("businessId"));
     if (!tenant || !tenant.business) {
       return NextResponse.json({ error: { message: "No business found" } }, { status: 404 });
     }
